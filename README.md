@@ -1,6 +1,11 @@
 # A simple HTTP client (http/1.1 & h2) with [Miou][miou]
 
 ```ocaml
+let getaddrinfo dns =
+  { Happy.getaddrinfo = fun record host -> Dns_miou.getaddrinfo dns record host }
+
+let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
+
 let () =
   Miou_unix.run @@ fun () ->
   let daemon, resolver = Happy.stack () in (* happy-eyeballs *)
