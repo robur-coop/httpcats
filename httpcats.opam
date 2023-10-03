@@ -28,5 +28,5 @@ build: [
 
 synopsis: "A simple HTTP client using http/af, h2, and miou"
 pin-depends: [
-  "miou.dev" "git+https://github.com/robur-coop/miou.git#55ff54ddfd585f52fcda4d56caf2458760a7f949"
+  "miou.dev" "git+https://github.com/robur-coop/miou.git#7f37ed6645965552a34070b23177dfdc4dda01fd"
 ]
