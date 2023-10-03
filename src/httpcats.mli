@@ -23,7 +23,7 @@ val request :
   ?max_redirect:int ->
   ?follow_redirect:bool ->
   resolver:Happy.stack ->
-  f:('a -> string -> 'a) ->
+  f:(response -> 'a -> string -> 'a) ->
   uri:string ->
   'a ->
   (response * 'a, error) result

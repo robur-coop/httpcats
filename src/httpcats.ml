@@ -139,6 +139,10 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
   let body_length = Option.map String.length body in
   let headers = prep_http_1_1_headers headers host user_pass body_length in
   let request = Httpaf.Request.create ~headers meth path in
+  let f response acc str =
+    let[@warning "-8"] (`V1 response : Http_miou_unix.response) = response in
+    f (from_httpaf response) acc str
+  in
   match Http_miou_unix.run ~f acc (`V1 config) flow (`V1 request) with
   | _, Process (V2, _, _) -> assert false
   | orphans, Process (V1, await, { body = stream; write_string; close }) -> (
@@ -163,6 +167,10 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
   let body_length = Option.map String.length body in
   let headers = prep_h2_headers headers host user_pass body_length in
   let request = H2.Request.create ~scheme ~headers meth path in
+  let f response acc str =
+    let[@warning "-8"] (`V2 response : Http_miou_unix.response) = response in
+    f (from_h2 response) acc str
+  in
   match Http_miou_unix.run ~f acc (`V2 config) flow (`V2 request) with
   | _, Process (V1, _, _) -> assert false
   | orphans, Process (V2, await, { body = stream; write_string; close }) -> (

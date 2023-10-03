@@ -178,8 +178,53 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
 
   (* Protected runtime operations.
 
+     A note on design and the need to "protect" the appearance of a new task.
+     Miou constrains us on 2 points:
+     1) we are obliged to observe the result of a task ([Miou.await]), otherwise
+        Miou fails.
+     2) only the task creator can observe the result. For example, this code
+        doesn't work:
 
-   *)
+     {[
+       let prm = Miou.call @@ fun () -> Miou.call (Fun.const ()) in
+       Miou.await_exn (Miou.await_exn prm)
+       (* the second promise (in [prm]) can only be awaited in [prm]. *)
+     ]}
+
+     The first rule requires us to use [Miou.orphans], which allows tasks to be
+     stored in the background. We can then catch up with them, which is what the
+     [terminate] function does. The second rule is more complicated...
+
+     The runtime ([httpaf] or [h2]) may be able to stop a task but force the
+     user to give a "continuation" allowing the same task to be restarted at the
+     right time (when the user wants to do a [Body.write_string], for example).
+     This is the case when [`Yield] is received from the runtime. This means
+     that there are continuations (in the runtime) which can cause tasks to
+     appear and which should be saved in a [Miou.orphans].
+
+     The problem is that it's not the task that gives the continuation that will
+     launch the subtask... So the best protection is to execute runtime
+     functions (which may launch subtasks) with a specific [Miou.orphan].
+     Continuation, on the other hand, consists in raising an effect that will be
+     protected with a specific [Miou.orphans]. In other words, the subtask is
+     saved not in the task [Miou.orphans] that creates the continuation, but in
+     the [Miou.orphans]'s task that creates **effectfully** the subtask.
+
+     So, after the ceremony to start an HTTP request, we need to protect the
+     functions that interact with the Body as well, because they can create
+     tasks too...
+
+     {[
+       let orphans, body, prm = run_http_request flow in
+       Body.write_string body "Hello World";
+       (* a new task appears to write ["Hello World!"] which will be saved into
+          orphans. *)
+       Body.close body;
+       (* a new task appears to finish the HTTP request. *)
+       let result = await prm in
+       terminate orphans
+     ]}
+  *)
 
   let protect ?give ?orphans fn v =
     let retc = Fun.id in
@@ -272,7 +317,6 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
             terminate orphans
         | `Close _ ->
             Log.debug (fun m -> m "next write operation: `close");
-            (* TODO(dinosaure): something already closed the socket when we use http/1.1 *)
             Flow.shutdown flow `Send;
             terminate orphans
       in
@@ -291,6 +335,10 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
         | _ -> assert false
       in
       Log.debug (fun m -> m "close the file-descriptor");
+      (* TODO(dinosaure): we should probably check the state of the underlying
+         flow and see if it's closed or not. I suspect that on [http/1.1], it's
+         not the case but Miou does not complain because we [disown]
+         everywhere. *)
       disown flow;
       match result with Ok () -> () | Error exn -> raise exn
     in
@@ -406,7 +454,36 @@ type 'acc process =
       ('resp, 'body) version * ('resp, 'acc) await * 'body
       -> 'acc process
 
-module A = Make (TLS) (Httpaf_Client_connection)
+module A =
+  Make
+    (struct
+      include TLS
+
+      let shutdown flow _ = Miou_unix.disown flow.flow
+    end)
+    (Httpaf_Client_connection)
+(* XXX(dinosaure): We need to make a serious note of this. The behavior of
+   http/1.1 with TLS seems rather "random" in the sense that some servers
+   deliver a close-notify to the client while others do nothing... Worse still,
+   if we want to deliver a close-notify to the server to say we no longer want
+   to write (but still want to read), some servers close the connection and we
+   get an [ECONNRESET] when we want to read (and we wouldn't have read the whole
+   HTML document...).
+
+   In other words, as far as HTTP/1.1 and TLS are concerned, we should NOT send
+   a close-notify. The other subtlety is (and this is not yet the case in our
+   code) to close the connection if the TLS layer fails (which is not the case
+   with H2). In short, these two subtleties mean that I've spent quite a few
+   days experimenting with and without the shutdown, and finally realized that
+   both behaviors are necessary for HTTP/1.1 AND H2...
+
+   However, this clarifies something quite important: thanks to Miou, we can be
+   sure that no task remains in the background after the request has been sent
+   and the response has been received. The interaction model with an HTTP server
+   can be quite complex (long polling, h2, websocket...) and we're not immune to
+   forgetting or double-clicking. Miou fails in such situations, which forced me
+   to rethink the execution of an HTTP request without [Lwt.async] ;) ! *)
+
 module B = Make (TCP) (Httpaf_Client_connection)
 module C = Make (TLS) (H2.Client_connection)
 module D = Make (TCP) (H2.Client_connection)
@@ -428,19 +505,16 @@ let run ~f acc config flow request =
         let rec on_eof = shutdown
         and on_read bstr ~off ~len =
           let str = Bigstringaf.substring bstr ~off ~len in
-          acc := f !acc str;
+          acc := f (`V1 resp) !acc str;
           Httpaf.Body.schedule_read body ~on_read ~on_eof
         in
         response := Some (`V1 resp);
         Httpaf.Body.schedule_read body ~on_read ~on_eof
     | `V2 (resp, body) ->
-        let rec on_eof () =
-          Log.debug (fun m ->
-              m "shutdown the connection from the application level");
-          shutdown ()
+        let rec on_eof = shutdown
         and on_read bstr ~off ~len =
           let str = Bigstringaf.substring bstr ~off ~len in
-          acc := f !acc str;
+          acc := f (`V2 resp) !acc str;
           H2.Body.Reader.schedule_read body ~on_read ~on_eof
         in
         response := Some (`V2 resp);

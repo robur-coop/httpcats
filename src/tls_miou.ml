@@ -65,18 +65,6 @@ module Make (Flow : Flow.S) = struct
             | None -> Ok ()
             | Some buf -> check_write flow (Flow.writev flow.flow [ buf ])
           in
-          (*
-          NOTE(dinosaure): with the /shutdown/ thing, we should not close
-          the connection and let the user to do so.
-
-          let () =
-            match res with
-            | `Ok _ -> ()
-            | _ ->
-                Log.warn (fun m -> m "close the socket due to a reading error");
-                Flow.close flow.flow
-          in
-          *)
           let data =
             match data with
             | None -> None

@@ -14,6 +14,7 @@ val epoch : tls -> Tls.Core.epoch_data option
 type config = [ `V1 of Httpaf.Config.t | `V2 of H2.Config.t ]
 type flow = [ `Tls of tls | `Tcp of Miou_unix.file_descr ]
 type request = [ `V1 of Httpaf.Request.t | `V2 of H2.Request.t ]
+type response = [ `V1 of Httpaf.Response.t | `V2 of H2.Response.t ]
 
 type error =
   [ `V1 of Httpaf.Client_connection.error
@@ -42,7 +43,7 @@ type 'acc process =
 val terminate : unit Miou.orphans -> unit
 
 val run :
-  f:('acc -> string -> 'acc) ->
+  f:(response -> 'acc -> string -> 'acc) ->
   'acc ->
   config ->
   flow ->

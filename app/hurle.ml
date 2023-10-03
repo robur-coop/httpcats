@@ -56,7 +56,7 @@ let () =
       let dns = Dns_miou.create resolver in
       Happy.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
       let acc = Buffer.create 0x100 in
-      let f buf str =
+      let f _ buf str =
         Buffer.add_string buf str;
         buf
       in
