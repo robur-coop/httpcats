@@ -1,0 +1,28 @@
+opam-version: "2.0"
+maintainer: "Robur <team@robur.coop>"
+authors: ["Robur <team@robur.coop>"]
+homepage: "https://github.com/robur-coop/httpcats"
+dev-repo: "git+https://github.com/robur-coop/httpcats.git"
+bug-reports: "https://github.com/robur-coop/httpcats/issues"
+license: "BSD-3-clause"
+
+depends: [
+  "ocaml" {>= "5.0.0"}
+  "dune" {>= "2.0.0"}
+  "logs"
+  "miou"
+  "httpaf" {>= "0.7.0"}
+  "tls" {>= "0.16.0"}
+  "fmt"
+  "h2" {>= "0.10.0"}
+]
+conflicts: [ "result" {< "1.5"} ]
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs]
+]
+
+synopsis: "A simple HTTP client using http/af, h2, and miou"
+pin-depends: [
+  "miou.dev" "git+https://github.com/robur-coop/miou.git#55ff54ddfd585f52fcda4d56caf2458760a7f949"
+]
