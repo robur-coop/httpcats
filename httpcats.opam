@@ -18,6 +18,7 @@ depends: [
   "hxd"
   "ca-certs"
   "dns-client"
+  "happy-eyeballs"
 ]
 conflicts: [ "result" {< "1.5"} ]
 build: [
