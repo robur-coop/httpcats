@@ -17,6 +17,7 @@ depends: [
   "h2" {>= "0.10.0"}
   "hxd"
   "ca-certs"
+  "dns-client"
 ]
 conflicts: [ "result" {< "1.5"} ]
 build: [
