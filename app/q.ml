@@ -18,6 +18,12 @@ let make size v =
     non_full = Miou_unix.Cond.make ~mutex:lock ();
   }
 
+let is_empty t =
+  Mutex.lock t.lock;
+  let is_empty = t.rdpos = t.wrpos in
+  Mutex.unlock t.lock;
+  is_empty
+
 let put t v =
   let predicate () = (t.wrpos + 1) mod Array.length t.buffer = t.rdpos in
   let fn () =

@@ -52,9 +52,6 @@ let () =
   Miou_unix.run @@ fun () ->
   match Sys.argv with
   | [| _; uri |] ->
-      let daemon, resolver = Happy.stack () in
-      let dns = Dns_miou.create resolver in
-      Happy.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
       let acc = Buffer.create 0x100 in
       let f _ buf str =
         Buffer.add_string buf str;
@@ -62,13 +59,12 @@ let () =
       in
       let prm =
         Miou.call @@ fun () ->
-        match Httpcats.request ~resolver ~f ~uri acc with
+        match Httpcats.request ~f ~uri acc with
         | Ok (_response, buf) ->
             pr "@[<hov>%a@]\n%!"
               (Hxd_string.pp Hxd.default)
               (Buffer.contents buf)
         | Error err -> epr "Got an error: %a\n%!" Httpcats.pp_error err
       in
-      Miou.await_exn prm;
-      Happy.kill daemon
+      Miou.await_exn prm
   | _ -> epr "%s <uri>\n%!" Sys.argv.(0)

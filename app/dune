@@ -3,3 +3,9 @@
  (modules hurle)
  (libraries logs.fmt fmt.tty logs.threaded mirage-crypto-rng.unix httpcats
    httpcats.happy hxd.string hxd.core))
+
+(executable
+ (name pars)
+ (modules q pars)
+ (libraries duration fmt.tty logs.fmt logs.threaded mirage-crypto-rng.unix
+   httpcats httpcats.happy progress))

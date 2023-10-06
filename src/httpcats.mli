@@ -22,8 +22,13 @@ val request :
   ?body:string ->
   ?max_redirect:int ->
   ?follow_redirect:bool ->
-  resolver:Happy.stack ->
   f:(response -> 'a -> string -> 'a) ->
   uri:string ->
   'a ->
   (response * 'a, error) result
+
+(**/**)
+
+type uri = bool * string * (string * string) option * string * int option * string
+
+val decode_uri : string -> (uri, [> `Msg of string ]) result

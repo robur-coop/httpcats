@@ -129,10 +129,8 @@ end
 
 let rec terminate orphans =
   match Miou.care orphans with
-  | None -> ()
-  | Some None ->
-      Miou.yield ();
-      terminate orphans
+  | None -> Miou.yield ()
+  | Some None -> Miou.yield (); terminate orphans
   | Some (Some prm) ->
       Miou.await_exn prm;
       terminate orphans
@@ -145,13 +143,15 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
   let recv flow buffer =
     let bytes_read =
       Buffer.put buffer ~f:(fun bstr ~off:dst_off ~len ->
-          match Flow.read ~read_buffer_size:len flow with
-          | Ok (`Data { Cstruct.buffer; off = src_off; len }) ->
-              Bigstringaf.blit buffer ~src_off bstr ~dst_off ~len;
+          let buf = Bytes.create len in
+          match Flow.read flow buf ~off:0 ~len with
+          | Ok 0 -> 0
+          | Ok len ->
+              Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len;
               len
-          | Ok `End_of_input -> 0
           | Error err ->
-              Log.debug (fun m -> m "close the socket (recv)");
+              Log.err (fun m ->
+                  m "close the socket (recv) due to: %a" Flow.pp_error err);
               Flow.close flow;
               raise (Flow (Fmt.str "%a" Flow.pp_error err)))
     in
@@ -165,15 +165,28 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
         let len = List.fold_left (fun a { Cstruct.len; _ } -> a + len) 0 css in
         `Ok len
     | Error err ->
-        Log.err (fun m -> m "got an error: %a" Flow.pp_error err);
-        Log.debug (fun m -> m "close the socket (writev)");
+        Log.err (fun m ->
+            m "close the socket (writev) due to: %a" Flow.pp_error err);
         Flow.close flow;
         `Closed
 
-  type _ Effect.t += Spawn : (unit -> unit) -> unit Effect.t
+  type prm = Miou.Promise.Uid.t * Miou.Domain.Uid.t * int
+  type _ Effect.t += Spawn : (prm:prm -> unit -> unit) -> unit Effect.t
+
+  let pp_prm ppf (uid, runner, resources) =
+    Fmt.pf ppf "[%a:%a](%d)" Miou.Domain.Uid.pp runner Miou.Promise.Uid.pp uid
+      resources
 
   let launch ?give ?orphans fn k =
-    let _prm = Miou.call_cc ?orphans ?give fn in
+    let prm =
+      Miou.call_cc ?orphans ?give @@ fun () ->
+      let prm = Miou.self () in
+      Log.debug (fun m -> m "%a launched" pp_prm prm);
+      fn ~prm ()
+    in
+    let cs = Effect.Deep.get_callstack k 1_000_000 in
+    Log.debug (fun m -> m "%a is launched from:" Miou.Promise.pp prm);
+    Log.debug (fun m -> m "%s" (Printexc.raw_backtrace_to_string cs));
     Effect.Deep.continue k ()
 
   (* Protected runtime operations.
@@ -249,9 +262,11 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
   let read_eof ?give ?orphans conn bstr ~off ~len =
     protect ?give ?orphans (Runtime.read_eof conn ~off ~len) bstr
 
-  let report_exn ?give ?orphans conn exn =
+  let report_exn ?give ?(disown = Fun.const ()) ?orphans conn exn =
     Log.err (fun m -> m "report an exception: %S" (Printexc.to_string exn));
-    protect ?give ?orphans (Runtime.report_exn conn) exn
+    protect ?give ?orphans (Runtime.report_exn conn) exn;
+    Option.iter terminate orphans;
+    disown ()
 
   let report_write_result ?give ?orphans conn =
     protect ?give ?orphans (Runtime.report_write_result conn)
@@ -270,11 +285,12 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
   let run conn ?(give = []) ?(disown = Fun.const ()) ~read_buffer_size flow =
     let buffer = Buffer.create read_buffer_size in
 
-    let rec reader () =
+    let rec reader ~prm () =
+      Log.debug (fun m -> m "%a starts the reading loop" pp_prm prm);
       let rec go orphans () =
         match next_read_operation ~orphans ~give conn with
         | `Read -> (
-            Log.debug (fun m -> m "next read operation: `read");
+            Log.debug (fun m -> m "%a next read operation: `read" pp_prm prm);
             let read_eof = read_eof ~orphans ~give in
             let read = read ~orphans ~give in
             match recv flow buffer with
@@ -289,45 +305,59 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
                 |> ignore;
                 go orphans ())
         | `Yield ->
-            Log.debug (fun m -> m "next read operation: `yield");
-            let continuation () = Effect.perform (Spawn reader) in
+            Log.debug (fun m -> m "%a next read operation: `yield" pp_prm prm);
+            let continuation () =
+              let prm = Miou.self () in
+              Log.debug (fun m -> m "%a launches a new task" pp_prm prm);
+              Effect.perform (Spawn reader)
+            in
             yield_reader conn ~orphans ~give continuation;
             disown flow;
             terminate orphans
         | `Close ->
-            Log.debug (fun m -> m "read: disown the file-descriptor");
+            Log.debug (fun m ->
+                m "%a read: disown the file-descriptor" pp_prm prm);
             disown flow;
             terminate orphans
       in
       let orphans = Miou.orphans () in
-      catch ~on:(report_exn conn ~orphans ~give) @@ fun () -> go orphans ()
+      let disown () = disown flow in
+      catch ~on:(report_exn conn ~orphans ~disown ~give) @@ fun () ->
+      go orphans ()
     in
-    let rec writer () =
+    let rec writer ~prm () =
+      Log.debug (fun m -> m "%a starts to the writing loop" pp_prm prm);
       let rec go orphans () =
         match next_write_operation ~orphans ~give conn with
         | `Write iovecs ->
-            Log.debug (fun m -> m "next write operation: `write");
+            Log.debug (fun m -> m "%a next write operation: `write" pp_prm prm);
             writev flow iovecs |> report_write_result conn ~orphans ~give;
             go orphans ()
         | `Yield ->
-            Log.debug (fun m -> m "next write operation: `yield");
-            let continuation () = Effect.perform (Spawn writer) in
+            Log.debug (fun m -> m "%a next write operation: `yield" pp_prm prm);
+            let continuation () =
+              let prm = Miou.self () in
+              Log.debug (fun m -> m "%a launches a new task" pp_prm prm);
+              Effect.perform (Spawn writer)
+            in
             yield_writer conn ~orphans ~give continuation;
             disown flow;
             terminate orphans
         | `Close _ ->
-            Log.debug (fun m -> m "next write operation: `close");
+            Log.debug (fun m -> m "%a next write operation: `close" pp_prm prm);
             Flow.shutdown flow `Send;
             terminate orphans
       in
       let orphans = Miou.orphans () in
-      catch ~on:(report_exn conn ~orphans ~give) @@ fun () -> go orphans ()
+      let disown () = disown flow in
+      catch ~on:(report_exn conn ~orphans ~disown ~give) @@ fun () ->
+      go orphans ()
     in
     let protect ~orphans = protect ~orphans ~give in
     let prm =
       Miou.call_cc ~give @@ fun () ->
-      let p0 = Miou.call_cc ~give reader in
-      let p1 = Miou.call_cc ~give writer in
+      let p0 = Miou.call_cc ~give @@ fun () -> reader ~prm:(Miou.self ()) () in
+      let p1 = Miou.call_cc ~give @@ fun () -> writer ~prm:(Miou.self ()) () in
       let result =
         match Miou.await_all [ p0; p1 ] with
         | [ Ok (); Ok () ] -> Ok ()
@@ -353,37 +383,40 @@ module TCP = struct
   let pp_error ppf (err, f, v) =
     Fmt.pf ppf "%s(%s): %s" f v (Unix.error_message err)
 
-  let read ?(read_buffer_size = 0x1000) flow =
-    let buf = Bytes.create read_buffer_size in
-    match Miou_unix.read flow buf ~off:0 ~len:(Bytes.length buf) with
-    | 0 -> Ok `End_of_input
-    | len -> Ok (`Data (Cstruct.of_string (Bytes.sub_string buf 0 len)))
-    | exception Unix.Unix_error (Unix.ECONNRESET, _, _) -> Ok `End_of_input
+  let read flow buf ~off ~len =
+    match Miou_unix.read flow buf ~off ~len with
+    | len -> Ok len
+    | exception Unix.Unix_error (Unix.ECONNRESET, _, _) -> Ok 0
     | exception Unix.Unix_error (err, f, v) -> Error (err, f, v)
 
-  let write flow ({ Cstruct.len; _ } as cs) =
+  let full_write flow ({ Cstruct.len; _ } as cs) =
     let str = Cstruct.to_string cs in
-    try Ok (Miou_unix.write flow str ~off:0 ~len)
-    with Unix.Unix_error (err, f, v) -> Error (err, f, v)
+    let rec go fd buf off len =
+      if len = 0 then Ok ()
+      else
+        match Unix.select [] [ fd ] [] (-1.0) with
+        | [], [ _ ], [] -> begin
+            try
+              let len' = Unix.single_write fd buf off len in
+              go fd buf (off + len') (len - len')
+            with
+            | Unix.Unix_error (Unix.EINTR, _, _) -> go fd buf off len
+            | Unix.Unix_error (err, f, v) -> Error (err, f, v)
+          end
+        | _ -> go fd buf off len
+        | exception Unix.Unix_error (err, f, v) -> Error (err, f, v)
+    in
+    go (Miou_unix.to_file_descr flow) (Bytes.unsafe_of_string str) 0 len
 
   let writev flow css =
-    let rec go = function
-      | [] -> Ok ()
-      | x :: r -> begin
-          match write flow x with Ok () -> go r | Error _ as err -> err
-        end
-    in
-    go css
+    let cs = Cstruct.concat css in
+    full_write flow cs
 
   let close = Miou_unix.close
 
   let shutdown flow = function
-    | `Recv ->
-        Logs.debug (fun m -> m "shutdown the receiving side");
-        Miou_unix.shutdown flow Unix.SHUTDOWN_RECEIVE
-    | `Send ->
-        Logs.debug (fun m -> m "shutdown the sending side");
-        Miou_unix.shutdown flow Unix.SHUTDOWN_SEND
+    | `Recv -> Miou_unix.shutdown flow Unix.SHUTDOWN_RECEIVE
+    | `Send -> Miou_unix.shutdown flow Unix.SHUTDOWN_SEND
 end
 
 module TLS = Tls_miou.Make (TCP)
@@ -392,7 +425,13 @@ type tls = TLS.t
 type tls_error = TLS.error
 
 let pp_tls_error = TLS.pp_error
-let to_tls = TLS.client_of_flow
+
+let to_tls cfg ?host flow =
+  match TLS.client_of_flow cfg ?host flow with
+  | Ok tls_flow -> Ok tls_flow
+  | Error _ as err ->
+      Miou_unix.disown flow;
+      err
 
 let epoch tls =
   match tls.TLS.state with

@@ -17,6 +17,9 @@ let decode_host_port str =
       try Ok (host, Some (int_of_string port))
       with _ -> Error (`Msg "Couln't decode port"))
 
+type uri =
+  bool * string * (string * string) option * string * int option * string
+
 let decode_uri uri =
   (* proto :// user : pass @ host : port / path *)
   let ( >>= ) = Result.bind in
@@ -177,6 +180,7 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
       Option.iter (write_string stream) body;
       close stream;
       let result = await () in
+      Log.err (fun m -> m "End of %S" path);
       Http_miou_unix.terminate orphans;
       match result with
       | Ok (response, acc) -> Ok (from_h2 response, acc)
@@ -195,30 +199,40 @@ let alpn_protocol = function
           None
       | None -> None)
 
-let connect resolver ?port ?tls_config host =
+let connect ?port ?tls_config host =
   let port =
     match (port, tls_config) with
     | None, None -> 80
     | None, Some _ -> 443
     | Some port, _ -> port
   in
-  let ( >>= ) x f = Result.bind x f in
-  Happy.connect_endpoint resolver host [ port ] >>= fun (_addr, socket) ->
-  match tls_config with
-  | Some config ->
-      Http_miou_unix.to_tls config socket
-      |> Result.map_error (fun err -> `Tls err)
-      >>= fun socket -> Ok (`Tls socket)
-  | None -> Ok (`Tcp socket)
+  match Unix.gethostbyname host with
+  | { Unix.h_addr_list; _ } when Array.length h_addr_list > 0 ->
+      let inet_addr = h_addr_list.(0) in
+      let fd =
+        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
+        else Miou_unix.tcpv4 ()
+      in
+      let sockaddr = Unix.ADDR_INET (inet_addr, port) in
+      begin
+        match (Miou_unix.connect fd sockaddr, tls_config) with
+        | exception _ -> error_msgf "Impossible to connect to %s" host
+        | (), None -> Ok (`Tcp fd)
+        | (), Some tls_config ->
+            let ( >>= ) = Result.bind in
+            Http_miou_unix.to_tls tls_config fd
+            |> Result.map_error (fun err -> `Tls err)
+            >>= fun socket -> Ok (`Tls socket)
+      end
+  | _ -> error_msgf "%s not found" host
 
-let single_request resolver ?http_config tls_config ~meth ~headers ?body uri f
-    acc =
+let single_request ?http_config tls_config ~meth ~headers ?body uri f acc =
   let ( let* ) = Result.bind in
   let ( let+ ) x f = Result.map f x in
   let* tls, scheme, user_pass, host, port, path = decode_uri uri in
   let* tls_config =
     if tls then
-      let+ tls_config = Lazy.force tls_config in
+      let+ tls_config = tls_config in
       let host =
         let* domain_name = Domain_name.of_string host in
         Domain_name.host domain_name
@@ -229,7 +243,7 @@ let single_request resolver ?http_config tls_config ~meth ~headers ?body uri f
       | `Default cfg, _ -> Some cfg
     else Ok None
   in
-  let* flow = connect resolver ?port ?tls_config host in
+  let* flow = connect ?port ?tls_config host in
   match (alpn_protocol flow, http_config) with
   | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
       single_http_1_1_request ~config flow user_pass host meth path headers body
@@ -242,8 +256,6 @@ let single_request resolver ?http_config tls_config ~meth ~headers ?body uri f
   | Some `H2, None ->
       single_h2_request flow scheme user_pass host meth path headers body f acc
   | _ -> assert false
-
-let default_authenticator = lazy (Ca_certs.authenticator ())
 
 let resolve_location ~uri ~location =
   match String.split_on_char '/' location with
@@ -261,28 +273,25 @@ let resolve_location ~uri ~location =
   | _ -> error_msgf "Unknown location (relative path): %S" location
 
 let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
-    ?body ?(max_redirect = 5) ?(follow_redirect = true) ~resolver ~f ~uri acc =
+    ?body ?(max_redirect = 5) ?(follow_redirect = true) ~f ~uri acc =
   let tls_config =
-    lazy
-      begin
-        match tls_config with
-        | Some cfg -> Ok (`Custom cfg)
-        | None ->
-            let alpn_protocols =
-              match config with
-              | None -> [ "h2"; "http/1.1" ]
-              | Some (`H2 _) -> [ "h2" ]
-              | Some (`HTTP_1_1 _) -> [ "http/1.1" ]
-            and authenticator =
-              match authenticator with
-              | None -> Lazy.force default_authenticator
-              | Some authenticator -> Ok authenticator
-            in
-            Result.map
-              (fun authenticator ->
-                `Default (Tls.Config.client ~alpn_protocols ~authenticator ()))
-              authenticator
-      end
+    match tls_config with
+    | Some cfg -> Ok (`Custom cfg)
+    | None ->
+        let alpn_protocols =
+          match config with
+          | None -> [ "h2"; "http/1.1" ]
+          | Some (`H2 _) -> [ "h2" ]
+          | Some (`HTTP_1_1 _) -> [ "http/1.1" ]
+        and authenticator =
+          match authenticator with
+          | None -> Ca_certs.authenticator ()
+          | Some authenticator -> Ok authenticator
+        in
+        Result.map
+          (fun authenticator ->
+            `Default (Tls.Config.client ~alpn_protocols ~authenticator ()))
+          authenticator
   in
   let http_config =
     match config with
@@ -291,16 +300,14 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
     | None -> None
   in
   if not follow_redirect then
-    single_request resolver ?http_config tls_config ~meth ~headers ?body uri f
-      acc
+    single_request ?http_config tls_config ~meth ~headers ?body uri f acc
   else
     let ( >>= ) = Result.bind in
     let rec follow_redirect count uri =
       if count = 0 then Error (`Msg "Redirect limit exceeded")
       else
         match
-          single_request resolver ?http_config tls_config ~meth ~headers ?body
-            uri f acc
+          single_request ?http_config tls_config ~meth ~headers ?body uri f acc
         with
         | Error _ as err -> err
         | Ok (resp, body) ->
