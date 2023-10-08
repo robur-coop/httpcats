@@ -29,6 +29,6 @@ build: [
 synopsis: "A simple HTTP client using http/af, h2, and miou"
 pin-depends: [
   [ "miou.dev" "git+https://github.com/robur-coop/miou.git#dd670fa016da94a7c21a85a493e269fb39efa5ba" ]
-  [ "mirage-crypto-rng.0.11.2" "git+https://github.com/mirage/mirage-crypto.git#d0bbca9f30f85fe8a32a49ef06ea56398b84aefd" ]
-  [ "mirage-crypto.0.11.2" "git+https://github.com/mirage/mirage-crypto.git#d0bbca9f30f85fe8a32a49ef06ea56398b84aefd" ]
+  [ "mirage-crypto.dev" "git+https://github.com/mirage/mirage-crypto.git#d0bbca9f30f85fe8a32a49ef06ea56398b84aefd" ]
+  [ "mirage-crypto-rng.dev" "git+https://github.com/mirage/mirage-crypto.git#d0bbca9f30f85fe8a32a49ef06ea56398b84aefd" ]
 ]
