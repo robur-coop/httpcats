@@ -175,7 +175,7 @@ let consume t events =
   Logs.debug (fun m -> m "Handle %d event(s)" (List.length events));
   List.iter handle events
 
-let rec run t uris =
+let rec run t uris () =
   Progress.Display.tick t.display;
   match (Miou.care t.orphans, uris) with
   | None, [] ->
@@ -188,7 +188,7 @@ let rec run t uris =
         ~uri;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
-      run t rest
+      run t rest ()
   | Some prm, uri :: rest ->
       Option.iter Miou.await_exn prm;
       download ~orphans:t.orphans ~events:t.events
@@ -196,12 +196,12 @@ let rec run t uris =
         ~uri;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
-      run t rest
+      run t rest ()
   | Some prm, [] ->
       Option.iter Miou.await_exn prm;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
-      run t []
+      run t [] ()
 
 let get_uris_from_stdin () =
   let rec go acc =
@@ -247,4 +247,5 @@ let () =
     (List.init (Miou.Domain.count ()) (Fun.const ()))
   |> List.iter (function Ok () -> () | Error exn -> raise exn);
   let t = make ~filenames in
-  run t uris
+  let prm = Miou.call_cc (run t uris) in
+  Miou.await_exn prm

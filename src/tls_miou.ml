@@ -2,10 +2,6 @@ let src = Logs.Src.create "tls-miou"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-let pp_file_descr ppf file_descr =
-  let fd = Miou_unix.to_file_descr (Obj.magic file_descr) in
-  Fmt.pf ppf "%d" (Obj.magic fd)
-
 module Make (Flow : Flow.S) = struct
   type error =
     [ `Tls_alert of Tls.Packet.alert_type
@@ -129,23 +125,6 @@ module Make (Flow : Flow.S) = struct
   let shutdown flow v =
     flow.writer_closed <- true;
     Flow.shutdown flow.flow v
-  (*
-    match (flow.state, v) with
-    | `Active _tls, `Send when not flow.writer_closed ->
-        (*
-        Log.debug (fun m ->
-            m "[%a][%d] -> packet" pp_file_descr flow.flow !(flow.wr));
-        let tls, buf = Tls.Engine.send_close_notify tls in
-        flow.state <- `Active tls;
-        flow.writer_closed <- true;
-        write_ign flow buf;
-        incr flow.wr;
-        Log.debug (fun m ->
-            m "[%a][%d] |> packet" pp_file_descr flow.flow !(flow.wr));
-        *)
-    | `Active _, _ -> close flow
-    | _ -> ()
-    *)
 
   let client_of_flow conf ?host flow =
     let conf' =

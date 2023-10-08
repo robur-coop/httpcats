@@ -27,6 +27,7 @@ type 'body body = {
   body : 'body;
   write_string : 'body -> ?off:int -> ?len:int -> string -> unit;
   close : 'body -> unit;
+  release : unit -> unit;
 }
 
 type ('resp, 'body) version =
@@ -48,4 +49,4 @@ val run :
   config ->
   flow ->
   request ->
-  unit Miou.orphans * 'acc process
+  'acc process

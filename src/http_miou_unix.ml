@@ -124,7 +124,7 @@ module type S = sig
     ?disown:(flow -> unit) ->
     read_buffer_size:int ->
     flow ->
-    protect * unit Miou.t
+    protect * unit Miou.t * (unit -> unit)
 end
 
 let rec terminate orphans =
@@ -262,11 +262,11 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
   let read_eof ?give ?orphans conn bstr ~off ~len =
     protect ?give ?orphans (Runtime.read_eof conn ~off ~len) bstr
 
-  let report_exn ?give ?(disown = Fun.const ()) ?orphans conn exn =
+  let report_exn ?give ?orphans ?(close= Fun.const ()) conn exn =
     Log.err (fun m -> m "report an exception: %S" (Printexc.to_string exn));
     protect ?give ?orphans (Runtime.report_exn conn) exn;
     Option.iter terminate orphans;
-    disown ()
+    close ()
 
   let report_write_result ?give ?orphans conn =
     protect ?give ?orphans (Runtime.report_write_result conn)
@@ -284,6 +284,10 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
 
   let run conn ?(give = []) ?(disown = Fun.const ()) ~read_buffer_size flow =
     let buffer = Buffer.create read_buffer_size in
+    let closed = ref false in
+    let close () =
+      if not !closed then ( Flow.close flow; closed := true )
+      else disown flow in
 
     let rec reader ~prm () =
       Log.debug (fun m -> m "%a starts the reading loop" pp_prm prm);
@@ -321,8 +325,7 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
             terminate orphans
       in
       let orphans = Miou.orphans () in
-      let disown () = disown flow in
-      catch ~on:(report_exn conn ~orphans ~disown ~give) @@ fun () ->
+      catch ~on:(report_exn conn ~orphans ~give ~close) @@ fun () ->
       go orphans ()
     in
     let rec writer ~prm () =
@@ -349,8 +352,7 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
             terminate orphans
       in
       let orphans = Miou.orphans () in
-      let disown () = disown flow in
-      catch ~on:(report_exn conn ~orphans ~disown ~give) @@ fun () ->
+      catch ~on:(report_exn conn ~orphans ~give ~close) @@ fun () ->
       go orphans ()
     in
     let protect ~orphans = protect ~orphans ~give in
@@ -369,11 +371,12 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
          flow and see if it's closed or not. I suspect that on [http/1.1], it's
          not the case but Miou does not complain because we [disown]
          everywhere. *)
-      disown flow;
-      match result with Ok () -> () | Error exn -> raise exn
+      match result with
+      | Ok () -> disown flow
+      | Error exn -> close (); raise exn
     in
     Log.debug (fun m -> m "the main task is: %a" Miou.Promise.pp prm);
-    ({ protect }, prm)
+    ({ protect }, prm, close)
 end
 
 module TCP = struct
@@ -461,6 +464,7 @@ type 'body body = {
   body : 'body;
   write_string : 'body -> ?off:int -> ?len:int -> string -> unit;
   close : 'body -> unit;
+  release : unit -> unit;
 }
 
 type ('resp, 'body) version =
@@ -493,10 +497,18 @@ type 'acc process =
       ('resp, 'body) version * ('resp, 'acc) await * 'body
       -> 'acc process
 
+module TLS' = struct
+  include TLS
+
+  let close flow = match flow.TLS.state with
+    | `Active _ -> close flow
+    | _ -> Miou_unix.disown flow.TLS.flow
+end
+
 module A =
   Make
     (struct
-      include TLS
+      include TLS'
 
       let shutdown flow _ = Miou_unix.disown flow.flow
     end)
@@ -524,7 +536,7 @@ module A =
    to rethink the execution of an HTTP request without [Lwt.async] ;) ! *)
 
 module B = Make (TCP) (Httpaf_Client_connection)
-module C = Make (TLS) (H2.Client_connection)
+module C = Make (TLS') (H2.Client_connection)
 module D = Make (TCP) (H2.Client_connection)
 
 (* NOTE(dinosaure): we avoid first-class module here. *)
@@ -575,8 +587,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let orphans = Miou.orphans () in
-      let { A.protect }, prm =
-        disown flow;
+      let { A.protect }, prm, close =
         Log.debug (fun m -> m "start an http/1.1 request over TLS");
         A.run conn ~give ~disown ~read_buffer_size flow
       in
@@ -587,12 +598,15 @@ let run ~f acc config flow request =
         | Ok (), None, Some (`V1 response) -> Ok (response, !acc)
         | Ok (), None, (Some (`V2 _) | None) -> assert false
       in
+      let release () =
+        terminate orphans;
+        close () in
       let write_string body ?off ?len str =
         protect ~orphans (Httpaf.Body.write_string body ?off ?len) str
       in
       let close body = protect ~orphans Httpaf.Body.close_writer body in
-      let body = { body; write_string; close } in
-      (orphans, Process (V1, await, body))
+      let body = { body; write_string; close; release } in
+      Process (V1, await, body)
   | `Tcp flow, `V1 config, `V1 request ->
       let read_buffer_size = config.Httpaf.Config.read_buffer_size in
       let disown = Miou_unix.disown in
@@ -603,8 +617,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let orphans = Miou.orphans () in
-      let { B.protect }, prm =
-        disown flow;
+      let { B.protect }, prm, close =
         B.run conn ~give ~disown ~read_buffer_size flow
       in
       let await () =
@@ -614,12 +627,15 @@ let run ~f acc config flow request =
         | Ok (), None, Some (`V1 response) -> Ok (response, !acc)
         | Ok (), None, (Some (`V2 _) | None) -> assert false
       in
+      let release () =
+        terminate orphans;
+        close () in
       let write_string body ?off ?len str =
         protect ~orphans (Httpaf.Body.write_string body ?off ?len) str
       in
       let close body = protect ~orphans Httpaf.Body.close_writer body in
-      let body = { body; write_string; close } in
-      (orphans, Process (V1, await, body))
+      let body = { body; write_string; close; release; } in
+      Process (V1, await, body)
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let disown flow = Miou_unix.disown flow.TLS.flow in
@@ -634,8 +650,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let orphans = Miou.orphans () in
-      let { C.protect }, prm =
-        disown flow;
+      let { C.protect }, prm, close =
         Log.debug (fun m -> m "start an h2 request over TLS");
         C.run conn ~give ~disown ~read_buffer_size flow
       in
@@ -646,6 +661,9 @@ let run ~f acc config flow request =
         | Ok (), None, Some (`V2 response) -> Ok (response, !acc)
         | Ok (), None, (Some (`V1 _) | None) -> assert false
       in
+      let release () =
+        terminate orphans;
+        close () in
       let write_string body ?off ?len str =
         protect ~orphans (H2.Body.Writer.write_string body ?off ?len) str
       in
@@ -653,8 +671,8 @@ let run ~f acc config flow request =
         Log.debug (fun m -> m "close the stream from the application level");
         protect ~orphans H2.Body.Writer.close body
       in
-      let body = { body; write_string; close } in
-      (orphans, Process (V2, await, body))
+      let body = { body; write_string; close; release } in
+      Process (V2, await, body)
   | `Tcp flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let disown = Miou_unix.disown in
@@ -669,8 +687,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let orphans = Miou.orphans () in
-      let { D.protect }, prm =
-        disown flow;
+      let { D.protect }, prm, close =
         D.run conn ~give ~disown ~read_buffer_size flow
       in
       let await () =
@@ -680,10 +697,13 @@ let run ~f acc config flow request =
         | Ok (), None, Some (`V2 response) -> Ok (response, !acc)
         | Ok (), None, (Some (`V1 _) | None) -> assert false
       in
+      let release () =
+        terminate orphans;
+         close () in
       let write_string body ?off ?len str =
         protect ~orphans (H2.Body.Writer.write_string body ?off ?len) str
       in
       let close body = protect ~orphans H2.Body.Writer.close body in
-      let body = { body; write_string; close } in
-      (orphans, Process (V2, await, body))
+      let body = { body; write_string; close; release } in
+      Process (V2, await, body)
   | _ -> Fmt.invalid_arg "Http_miou_unix.run: incompatible arguments"

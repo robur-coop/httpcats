@@ -147,12 +147,12 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
     f (from_httpaf response) acc str
   in
   match Http_miou_unix.run ~f acc (`V1 config) flow (`V1 request) with
-  | _, Process (V2, _, _) -> assert false
-  | orphans, Process (V1, await, { body = stream; write_string; close }) -> (
+  | Process (V2, _, _) -> assert false
+  | Process (V1, await, { body = stream; write_string; close; release }) -> (
       Option.iter (write_string stream) body;
       close stream;
       let result = await () in
-      Http_miou_unix.terminate orphans;
+      release ();
       match result with
       | Ok (response, acc) -> Ok (from_httpaf response, acc)
       | Error (#Http_miou_unix.error as err) -> Error (err :> error))
@@ -175,13 +175,12 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
     f (from_h2 response) acc str
   in
   match Http_miou_unix.run ~f acc (`V2 config) flow (`V2 request) with
-  | _, Process (V1, _, _) -> assert false
-  | orphans, Process (V2, await, { body = stream; write_string; close }) -> (
+  | Process (V1, _, _) -> assert false
+  | Process (V2, await, { body = stream; write_string; close; release }) -> (
       Option.iter (write_string stream) body;
       close stream;
       let result = await () in
-      Log.err (fun m -> m "End of %S" path);
-      Http_miou_unix.terminate orphans;
+      release ();
       match result with
       | Ok (response, acc) -> Ok (from_h2 response, acc)
       | Error (#Http_miou_unix.error as err) -> Error (err :> error))
