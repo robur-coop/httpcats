@@ -130,7 +130,9 @@ end
 let rec terminate orphans =
   match Miou.care orphans with
   | None -> Miou.yield ()
-  | Some None -> Miou.yield (); terminate orphans
+  | Some None ->
+      Miou.yield ();
+      terminate orphans
   | Some (Some prm) ->
       Miou.await_exn prm;
       terminate orphans
@@ -262,7 +264,7 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
   let read_eof ?give ?orphans conn bstr ~off ~len =
     protect ?give ?orphans (Runtime.read_eof conn ~off ~len) bstr
 
-  let report_exn ?give ?orphans ?(close= Fun.const ()) conn exn =
+  let report_exn ?give ?orphans ?(close = Fun.const ()) conn exn =
     Log.err (fun m -> m "report an exception: %S" (Printexc.to_string exn));
     protect ?give ?orphans (Runtime.report_exn conn) exn;
     Option.iter terminate orphans;
@@ -286,8 +288,11 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
     let buffer = Buffer.create read_buffer_size in
     let closed = ref false in
     let close () =
-      if not !closed then ( Flow.close flow; closed := true )
-      else disown flow in
+      if not !closed then (
+        Flow.close flow;
+        closed := true)
+      else disown flow
+    in
 
     let rec reader ~prm () =
       Log.debug (fun m -> m "%a starts the reading loop" pp_prm prm);
@@ -373,7 +378,9 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
          everywhere. *)
       match result with
       | Ok () -> disown flow
-      | Error exn -> close (); raise exn
+      | Error exn ->
+          close ();
+          raise exn
     in
     Log.debug (fun m -> m "the main task is: %a" Miou.Promise.pp prm);
     ({ protect }, prm, close)
@@ -500,7 +507,8 @@ type 'acc process =
 module TLS' = struct
   include TLS
 
-  let close flow = match flow.TLS.state with
+  let close flow =
+    match flow.TLS.state with
     | `Active _ -> close flow
     | _ -> Miou_unix.disown flow.TLS.flow
 end
@@ -600,7 +608,8 @@ let run ~f acc config flow request =
       in
       let release () =
         terminate orphans;
-        close () in
+        close ()
+      in
       let write_string body ?off ?len str =
         protect ~orphans (Httpaf.Body.write_string body ?off ?len) str
       in
@@ -629,12 +638,13 @@ let run ~f acc config flow request =
       in
       let release () =
         terminate orphans;
-        close () in
+        close ()
+      in
       let write_string body ?off ?len str =
         protect ~orphans (Httpaf.Body.write_string body ?off ?len) str
       in
       let close body = protect ~orphans Httpaf.Body.close_writer body in
-      let body = { body; write_string; close; release; } in
+      let body = { body; write_string; close; release } in
       Process (V1, await, body)
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
@@ -663,7 +673,8 @@ let run ~f acc config flow request =
       in
       let release () =
         terminate orphans;
-        close () in
+        close ()
+      in
       let write_string body ?off ?len str =
         protect ~orphans (H2.Body.Writer.write_string body ?off ?len) str
       in
@@ -699,7 +710,8 @@ let run ~f acc config flow request =
       in
       let release () =
         terminate orphans;
-         close () in
+        close ()
+      in
       let write_string body ?off ?len str =
         protect ~orphans (H2.Body.Writer.write_string body ?off ?len) str
       in

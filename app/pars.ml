@@ -76,8 +76,7 @@ let download ~orphans ~events ~uid ~uri =
       Miou.Queue.enqueue events (`Data (uid, String.length str))
     in
     match Httpcats.request ~uri ~f () with
-    | Ok (_response, ()) ->
-        Miou.Queue.enqueue events (`End uid)
+    | Ok (_response, ()) -> Miou.Queue.enqueue events (`End uid)
     | Error err -> Miou.Queue.enqueue events (`Error (uid, err))
   in
   ()
@@ -159,14 +158,11 @@ let consume t events =
         t.reporters.(uid) <- All_knowning reporter
     | `Data (uid, downloaded) -> (
         match t.reporters.(uid) with
-        | Unknown _old ->
-            t.reporters.(uid) <- Unknown downloaded
-        | All_knowning reporter ->
-            Progress.Reporter.report reporter downloaded)
+        | Unknown _old -> t.reporters.(uid) <- Unknown downloaded
+        | All_knowning reporter -> Progress.Reporter.report reporter downloaded)
     | `End uid -> (
         match t.reporters.(uid) with
-        | All_knowning reporter ->
-            Progress.Reporter.finalise reporter
+        | All_knowning reporter -> Progress.Reporter.finalise reporter
         | _ -> ())
     | `Error (uid, err) ->
         Logs.err (fun m ->
@@ -241,11 +237,6 @@ let () =
       uris
   in
   Logs.debug (fun m -> m "Got %d uri(s)" (List.length uris));
-  Miou.parallel
-    (fun () ->
-      Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna))
-    (List.init (Miou.Domain.count ()) (Fun.const ()))
-  |> List.iter (function Ok () -> () | Error exn -> raise exn);
   let t = make ~filenames in
   let prm = Miou.call_cc (run t uris) in
   Miou.await_exn prm

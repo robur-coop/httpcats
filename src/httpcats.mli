@@ -29,6 +29,7 @@ val request :
 
 (**/**)
 
-type uri = bool * string * (string * string) option * string * int option * string
+type uri =
+  bool * string * (string * string) option * string * int option * string
 
 val decode_uri : string -> (uri, [> `Msg of string ]) result
