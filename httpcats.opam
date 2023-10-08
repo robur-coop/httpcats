@@ -19,6 +19,7 @@ depends: [
   "ca-certs"
   "dns-client"
   "happy-eyeballs"
+  "progress"
 ]
 conflicts: [ "result" {< "1.5"} ]
 build: [
