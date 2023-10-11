@@ -1,8 +1,8 @@
-(executable
- (name hurle)
- (modules hurle)
- (libraries logs.fmt fmt.tty logs.threaded mirage-crypto-rng.unix httpcats
-   httpcats.happy hxd.string hxd.core))
+; (executable
+;  (name hurle)
+;  (modules hurle)
+;  (libraries logs.fmt fmt.tty logs.threaded mirage-crypto-rng.unix httpcats
+;    httpcats.happy hxd.string hxd.core))
 
 (executable
  (name pars)

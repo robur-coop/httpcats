@@ -1,21 +1,20 @@
-type 'a t = {
-  buffer : 'a array;
-  mutable rdpos : int;
-  mutable wrpos : int;
-  lock : Mutex.t;
-  non_empty : Miou_unix.Cond.t;
-  non_full : Miou_unix.Cond.t;
-}
+type 'a t =
+  { buffer : 'a array
+  ; mutable rdpos : int
+  ; mutable wrpos : int
+  ; lock : Mutex.t
+  ; non_empty : Miou_unix.Cond.t
+  ; non_full : Miou_unix.Cond.t
+  }
 
 let make size v =
   let lock = Mutex.create () in
-  {
-    buffer = Array.make size v;
-    lock;
-    rdpos = 0;
-    wrpos = 0;
-    non_empty = Miou_unix.Cond.make ~mutex:lock ();
-    non_full = Miou_unix.Cond.make ~mutex:lock ();
+  { buffer = Array.make size v
+  ; lock
+  ; rdpos = 0
+  ; wrpos = 0
+  ; non_empty = Miou_unix.Cond.make ~mutex:lock ()
+  ; non_full = Miou_unix.Cond.make ~mutex:lock ()
   }
 
 let is_empty t =

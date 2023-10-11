@@ -36,36 +36,35 @@ and value =
   | `Resolution_v6 of
     [ `host ] Domain_name.t * (Ipaddr.V6.Set.t, [ `Msg of string ]) result ]
 
-and getaddrinfo = {
-  getaddrinfo :
-    'response 'a.
-    'response Dns.Rr_map.key ->
-    'a Domain_name.t ->
-    ('response, [ `Msg of string ]) result;
-}
+and getaddrinfo =
+  { getaddrinfo :
+      'response 'a.
+         'response Dns.Rr_map.key
+      -> 'a Domain_name.t
+      -> ('response, [ `Msg of string ]) result
+  }
 [@@unboxed]
 
 let dummy =
   let getaddrinfo _ _ = Error (`Msg "Not implemented") in
   { getaddrinfo }
 
-type stack = {
-  mutable cancel_connecting : cancel list Happy_eyeballs.Waiter_map.t;
-  mutable waiters : state Atomic.t Happy_eyeballs.Waiter_map.t;
-  condition : Miou_unix.Cond.t;
-  queue : action Miou.Queue.t;
-  connections : (Miou.Promise.Uid.t, entry) Hashtbl.t;
-  mutable getaddrinfo : getaddrinfo;
-}
+type stack =
+  { mutable cancel_connecting : cancel list Happy_eyeballs.Waiter_map.t
+  ; mutable waiters : state Atomic.t Happy_eyeballs.Waiter_map.t
+  ; condition : Miou_unix.Cond.t
+  ; queue : action Miou.Queue.t
+  ; connections : (Miou.Promise.Uid.t, entry) Hashtbl.t
+  ; mutable getaddrinfo : getaddrinfo
+  }
 
 let create_stack () =
-  {
-    cancel_connecting = Happy_eyeballs.Waiter_map.empty;
-    waiters = Happy_eyeballs.Waiter_map.empty;
-    condition = Miou_unix.Cond.make ();
-    queue = Miou.Queue.create ();
-    connections = Hashtbl.create 0x100;
-    getaddrinfo = dummy;
+  { cancel_connecting = Happy_eyeballs.Waiter_map.empty
+  ; waiters = Happy_eyeballs.Waiter_map.empty
+  ; condition = Miou_unix.Cond.make ()
+  ; queue = Miou.Queue.create ()
+  ; connections = Hashtbl.create 0x100
+  ; getaddrinfo = dummy
   }
 
 let try_connect addr () =
@@ -358,8 +357,8 @@ let stack ?aaaa_timeout ?connect_delay ?connect_timeout ?resolve_timeout
     ?resolve_retries () =
   let v = create_stack () in
   ( launch_stack ?aaaa_timeout ?connect_delay ?connect_timeout ?resolve_timeout
-      ?resolve_retries v (),
-    v )
+      ?resolve_retries v ()
+  , v )
 
 let inject_resolver ~getaddrinfo stack = stack.getaddrinfo <- getaddrinfo
 let kill = Miou.cancel
@@ -367,12 +366,12 @@ let kill = Miou.cancel
 type +'a io = 'a
 type io_addr = [ `Plaintext of Ipaddr.t * int ]
 
-type t = {
-  nameservers : io_addr list;
-  proto : Dns.proto;
-  timeout : float;
-  stack : stack;
-}
+type t =
+  { nameservers : io_addr list
+  ; proto : Dns.proto
+  ; timeout : float
+  ; stack : stack
+  }
 
 type context = float * bool ref * Miou_unix.file_descr
 

@@ -1,3 +1,27 @@
+type arguments =
+  { json : bool
+  ; form : bool
+  ; multipart : bool
+  ; boundary : string option
+  ; raw : string option
+  ; compress : bool
+  ; pretty : [ `All | `Colors | `Format | `None ] (* style : style *)
+  ; sorted : bool
+  ; charset : Rosetta.encoding
+  ; response_mime : string option
+  ; headers : bool
+  ; body : bool
+  ; verbose : [ `Verbose | `Quiet ]
+  ; output : Fpath.t option
+  ; continue : bool
+  ; auth : (string * string option) option
+  ; auth_type : [ `Basic | `Digest ]
+  ; follow : bool
+  ; chunked : bool
+  ; meth : Method.t
+  ; uri : string
+  }
+
 let anchor = Unix.gettimeofday ()
 let sigpipe = 13
 let () = Sys.set_signal sigpipe Sys.Signal_ignore
@@ -41,9 +65,8 @@ let epr fmt =
   Fun.protect ~finally @@ fun () -> Format.eprintf fmt
 
 let getaddrinfo dns =
-  {
-    Happy.getaddrinfo =
-      (fun record host -> Dns_miou.getaddrinfo dns record host);
+  { Happy.getaddrinfo =
+      (fun record host -> Dns_miou.getaddrinfo dns record host)
   }
 
 let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)

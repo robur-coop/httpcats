@@ -8,6 +8,7 @@ let decode_host_port str =
   match String.split_on_char ':' str with
   | [] -> Error (`Msg "Empty host part")
   | [ host ] -> Ok (host, None)
+  | [ host; "" ] -> Ok (host, None)
   | hd :: tl -> (
       let port, host =
         match List.rev (hd :: tl) with
@@ -17,8 +18,14 @@ let decode_host_port str =
       try Ok (host, Some (int_of_string port))
       with _ -> Error (`Msg "Couln't decode port"))
 
+let decode_user_pass up =
+  match String.split_on_char ':' up with
+  | [ user; pass ] -> Ok (user, Some pass)
+  | [ user ] -> Ok (user, None)
+  | _ -> assert false
+
 type uri =
-  bool * string * (string * string) option * string * int option * string
+  bool * string * (string * string option) option * string * int option * string
 
 let decode_uri uri =
   (* proto :// user : pass @ host : port / path *)
@@ -29,11 +36,6 @@ let decode_uri uri =
        else if String.equal proto "https:" then Ok ("https", true)
        else Error (`Msg "Unknown protocol"))
       >>= fun (scheme, is_tls) ->
-      let decode_user_pass up =
-        match String.split_on_char ':' up with
-        | [ user; pass ] -> Ok (user, pass)
-        | _ -> Error (`Msg "Couldn't decode user and password")
-      in
       (match String.split_on_char '@' user_pass_host_port with
       | [ host_port ] -> Ok (None, host_port)
       | [ user_pass; host_port ] ->
@@ -42,14 +44,37 @@ let decode_uri uri =
       >>= fun (user_pass, host_port) ->
       decode_host_port host_port >>= fun (host, port) ->
       Ok (is_tls, scheme, user_pass, host, port, "/" ^ String.concat "/" path)
+  | [ user_pass_host_port ] ->
+      (match String.split_on_char '@' user_pass_host_port with
+      | [ host_port ] -> Ok (None, host_port)
+      | [ user_pass; host_port ] ->
+          decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
+      | _ -> Error (`Msg "Couldn't decode URI"))
+      >>= fun (user_pass, host_port) ->
+      decode_host_port host_port >>= fun (host, port) ->
+      Ok (false, "", user_pass, host, port, "/")
+  | user_pass_host_port :: path ->
+      (match String.split_on_char '@' user_pass_host_port with
+      | [ host_port ] -> Ok (None, host_port)
+      | [ user_pass; host_port ] ->
+          decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
+      | _ -> Error (`Msg "Couldn't decode URI"))
+      >>= fun (user_pass, host_port) ->
+      decode_host_port host_port >>= fun (host, port) ->
+      Ok (false, "", user_pass, host, port, "/" ^ String.concat "/" path)
   | _ -> Error (`Msg "Could't decode URI on top")
 
-let add_authentication ~add headers = function
-  | None -> headers
-  | Some (user, pass) ->
+let add_authentication ?(meth = `Basic) ~add headers user_pass =
+  match (user_pass, meth) with
+  | None, _ -> headers
+  | Some (user, Some pass), `Basic ->
       let data = Base64.encode_string (user ^ ":" ^ pass) in
-      let s = "Basic " ^ data in
-      add headers "authorization" s
+      let str = "Basic " ^ data in
+      add headers "authorization" str
+  | Some (user, None), `Basic ->
+      let data = Base64.encode_string user in
+      let str = "Basic " ^ data in
+      add headers "authorization" str
 
 let user_agent = "http-client/%%VERSION_NUM%%"
 
@@ -108,33 +133,43 @@ module Version = Httpaf.Version
 module Status = H2.Status
 module Headers = H2.Headers
 
-type response = {
-  version : Version.t;
-  status : Status.t;
-  reason : string;
-  headers : Headers.t;
-}
+type response =
+  { version : Version.t
+  ; status : Status.t
+  ; reason : string
+  ; headers : Headers.t
+  }
 
 type error =
   [ `V1 of Httpaf.Client_connection.error
   | `V2 of H2.Client_connection.error
   | `Protocol of string
   | `Msg of string
-  | `Tls of Http_miou_unix.tls_error ]
+  | `Tls of Http_miou_unix.TLS.error ]
 
 let pp_error ppf = function
-  | #Http_miou_unix.error as err -> Http_miou_unix.pp_error ppf err
+  | `Protocol msg -> Fmt.string ppf msg
   | `Msg msg -> Fmt.string ppf msg
-  | `Tls err -> Http_miou_unix.pp_tls_error ppf err
+  | `Tls err -> Http_miou_unix.TLS.pp_error ppf err
+  | `V1 (`Malformed_response msg) ->
+      Fmt.pf ppf "Malformed HTTP/1.1 response: %s" msg
+  | `V1 (`Invalid_response_body_length _resp) ->
+      Fmt.pf ppf "Invalid response body length"
+  | `V1 (`Exn exn) | `V2 (`Exn exn) ->
+      Fmt.pf ppf "Got an unexpected exception: %S" (Printexc.to_string exn)
+  | `V2 (`Malformed_response msg) -> Fmt.pf ppf "Malformed H2 response: %s" msg
+  | `V2 (`Invalid_response_body_length _resp) ->
+      Fmt.pf ppf "Invalid response body length"
+  | `V2 (`Protocol_error (err, msg)) ->
+      Fmt.pf ppf "Protocol error %a: %s" H2.Error_code.pp_hum err msg
 
 let from_httpaf response =
-  {
-    version = response.Httpaf.Response.version;
-    status = (response.Httpaf.Response.status :> H2.Status.t);
-    reason = response.Httpaf.Response.reason;
-    headers =
+  { version = response.Httpaf.Response.version
+  ; status = (response.Httpaf.Response.status :> H2.Status.t)
+  ; reason = response.Httpaf.Response.reason
+  ; headers =
       H2.Headers.of_list
-        (Httpaf.Headers.to_list response.Httpaf.Response.headers);
+        (Httpaf.Headers.to_list response.Httpaf.Response.headers)
   }
 
 let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
@@ -143,10 +178,10 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
   let headers = prep_http_1_1_headers headers host user_pass body_length in
   let request = Httpaf.Request.create ~headers meth path in
   let f response acc str =
-    let[@warning "-8"] (`V1 response : Http_miou_unix.response) = response in
+    let[@warning "-8"] (`V1 response : Http_miou_client.response) = response in
     f (from_httpaf response) acc str
   in
-  match Http_miou_unix.run ~f acc (`V1 config) flow (`V1 request) with
+  match Http_miou_client.run ~f acc (`V1 config) flow (`V1 request) with
   | Process (V2, _, _) -> assert false
   | Process (V1, await, { body = stream; write_string; close; release }) -> (
       Option.iter (write_string stream) body;
@@ -155,14 +190,13 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
       release ();
       match result with
       | Ok (response, acc) -> Ok (from_httpaf response, acc)
-      | Error (#Http_miou_unix.error as err) -> Error (err :> error))
+      | Error (#Http_miou_client.error as err) -> Error (err :> error))
 
 let from_h2 response =
-  {
-    version = { major = 2; minor = 0 };
-    status = response.H2.Response.status;
-    reason = "";
-    headers = response.H2.Response.headers;
+  { version = { major = 2; minor = 0 }
+  ; status = response.H2.Response.status
+  ; reason = ""
+  ; headers = response.H2.Response.headers
   }
 
 let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
@@ -171,10 +205,10 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
   let headers = prep_h2_headers headers host user_pass body_length in
   let request = H2.Request.create ~scheme ~headers meth path in
   let f response acc str =
-    let[@warning "-8"] (`V2 response : Http_miou_unix.response) = response in
+    let[@warning "-8"] (`V2 response : Http_miou_client.response) = response in
     f (from_h2 response) acc str
   in
-  match Http_miou_unix.run ~f acc (`V2 config) flow (`V2 request) with
+  match Http_miou_client.run ~f acc (`V2 config) flow (`V2 request) with
   | Process (V1, _, _) -> assert false
   | Process (V2, await, { body = stream; write_string; close; release }) -> (
       Option.iter (write_string stream) body;
@@ -183,7 +217,7 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
       release ();
       match result with
       | Ok (response, acc) -> Ok (from_h2 response, acc)
-      | Error (#Http_miou_unix.error as err) -> Error (err :> error))
+      | Error (#Http_miou_client.error as err) -> Error (err :> error))
 
 let alpn_protocol = function
   | `Tcp _ -> None
@@ -319,3 +353,5 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
             else Ok (resp, body)
     in
     follow_redirect max_redirect uri
+
+module Server = Http_miou_server

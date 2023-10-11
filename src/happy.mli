@@ -5,23 +5,23 @@ include
 
 type daemon
 
-type getaddrinfo = {
-  getaddrinfo :
-    'response 'a.
-    'response Dns.Rr_map.key ->
-    'a Domain_name.t ->
-    ('response, [ `Msg of string ]) result;
-}
+type getaddrinfo =
+  { getaddrinfo :
+      'response 'a.
+         'response Dns.Rr_map.key
+      -> 'a Domain_name.t
+      -> ('response, [ `Msg of string ]) result
+  }
 [@@unboxed]
 
 val stack :
-  ?aaaa_timeout:int64 ->
-  ?connect_delay:int64 ->
-  ?connect_timeout:int64 ->
-  ?resolve_timeout:int64 ->
-  ?resolve_retries:int ->
-  unit ->
-  daemon * stack
+     ?aaaa_timeout:int64
+  -> ?connect_delay:int64
+  -> ?connect_timeout:int64
+  -> ?resolve_timeout:int64
+  -> ?resolve_retries:int
+  -> unit
+  -> daemon * stack
 
 val inject_resolver : getaddrinfo:getaddrinfo -> stack -> unit
 (** [inject_resolver ~getaddrinfo stack] injects a DNS resolver into the given
@@ -38,26 +38,26 @@ val kill : daemon -> unit
     The user {b must} call at the end of its application this function. *)
 
 val connect_ip :
-  stack ->
-  (Ipaddr.t * int) list ->
-  ((Ipaddr.t * int) * Miou_unix.file_descr, [> `Msg of string ]) result
+     stack
+  -> (Ipaddr.t * int) list
+  -> ((Ipaddr.t * int) * Miou_unix.file_descr, [> `Msg of string ]) result
 (** [connect_ip t addresses] establishes a connection to [addresses]. *)
 
 val connect_host :
-  stack ->
-  [ `host ] Domain_name.t ->
-  int list ->
-  ((Ipaddr.t * int) * Miou_unix.file_descr, [> `Msg of string ]) result
+     stack
+  -> [ `host ] Domain_name.t
+  -> int list
+  -> ((Ipaddr.t * int) * Miou_unix.file_descr, [> `Msg of string ]) result
 (** [connect_host t host ports] establishes a connection to [host] on [ports]
     (tried in sequence).
 
     @raise Failure if [ports] is empty. *)
 
 val connect_endpoint :
-  stack ->
-  string ->
-  int list ->
-  ((Ipaddr.t * int) * Miou_unix.file_descr, [> `Msg of string ]) result
+     stack
+  -> string
+  -> int list
+  -> ((Ipaddr.t * int) * Miou_unix.file_descr, [> `Msg of string ]) result
 (** [connect_endpoint t host ports] establishes a connection to [host] on
     [ports], which may be a host name or an IP address.
 

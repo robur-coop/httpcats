@@ -89,14 +89,14 @@ type event =
 
 type display = (unit, unit) Progress.Display.t
 
-type t = {
-  gen : int Atomic.t;
-  orphans : unit Miou.orphans;
-  events : event Miou.Queue.t;
-  reporters : reporter array;
-  display : display;
-  align : int;
-}
+type t =
+  { gen : int Atomic.t
+  ; orphans : unit Miou.orphans
+  ; events : event Miou.Queue.t
+  ; reporters : reporter array
+  ; display : display
+  ; align : int
+  }
 
 let make ~filenames =
   let gen = Atomic.make 0 in
@@ -208,9 +208,8 @@ let get_uris_from_stdin () =
   go []
 
 let getaddrinfo dns =
-  {
-    Happy.getaddrinfo =
-      (fun record host -> Dns_miou.getaddrinfo dns record host);
+  { Happy.getaddrinfo =
+      (fun record host -> Dns_miou.getaddrinfo dns record host)
   }
 
 let sigpipe = 13

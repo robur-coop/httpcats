@@ -19,14 +19,14 @@ module Make (Flow : Flow.S) = struct
 
   type state = [ `Active of Tls.Engine.state | `End_of_input | `Error of error ]
 
-  type t = {
-    role : [ `Server | `Client ];
-    flow : Flow.t;
-    mutable state : state;
-    recv : bytes;
-    mutable linger : Cstruct.t option;
-    mutable writer_closed : bool;
-  }
+  type t =
+    { role : [ `Server | `Client ]
+    ; flow : Flow.t
+    ; mutable state : state
+    ; recv : bytes
+    ; mutable linger : Cstruct.t option
+    ; mutable writer_closed : bool
+    }
 
   let write flow buf =
     match Flow.writev flow.flow [ buf ] with
@@ -132,13 +132,12 @@ module Make (Flow : Flow.S) = struct
     in
     let tls, init = Tls.Engine.client conf' in
     let tls_flow =
-      {
-        role = `Client;
-        flow;
-        state = `Active tls;
-        linger = None;
-        recv = Bytes.create 0x1000;
-        writer_closed = false;
+      { role = `Client
+      ; flow
+      ; state = `Active tls
+      ; linger = None
+      ; recv = Bytes.create 0x1000
+      ; writer_closed = false
       }
     in
     match write tls_flow init with

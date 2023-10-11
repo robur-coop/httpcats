@@ -1,7 +1,8 @@
 (library
  (name httpcats)
  (public_name httpcats)
- (modules flow http_miou_unix httpcats tls_miou)
+ (modules flow runtime http_miou_unix http_miou_client http_miou_server
+   httpcats tls_miou)
  (libraries ca-certs httpaf h2 httpcats.happy tls miou miou.unix))
 
 (library
