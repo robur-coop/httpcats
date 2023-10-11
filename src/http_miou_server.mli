@@ -2,8 +2,12 @@ type error
 
 val pp_error : error Fmt.t
 
-type request = [ `V1 of Httpaf.Request.t | `V2 of H2.Request.t ]
-type response = [ `V1 of Httpaf.Response.t | `V2 of H2.Response.t ]
+module Method = H2.Method
+module Headers = H2.Headers
+module Status = H2.Status
+
+type request =
+  { meth : Method.t; target : string; scheme : string; headers : Headers.t }
 
 type stream =
   { write_string : ?off:int -> ?len:int -> string -> unit
@@ -11,9 +15,9 @@ type stream =
   ; close : unit -> unit
   }
 
-val string : response -> string -> unit
-val bigstring : response -> Bigstringaf.t -> unit
-val stream : response -> stream
+val string : status:Status.t -> ?headers:Headers.t -> string -> unit
+val bigstring : status:Status.t -> ?headers:Headers.t -> Bigstringaf.t -> unit
+val stream : ?headers:Headers.t -> Status.t -> stream
 
 type error_handler =
   ?request:request -> error -> (H2.Headers.t -> stream) -> unit

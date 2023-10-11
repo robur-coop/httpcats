@@ -43,15 +43,14 @@ let test00 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   Miou_unix.run @@ fun () ->
   let handler _request =
-    let open Httpaf in
+    let open Httpcats.Server in
     let body = "Hello World!" in
     let headers =
       Headers.of_list
         [ ("content-type", "text/plain")
         ; ("content-length", string_of_int (String.length body)) ]
     in
-    let response = Response.create ~headers `OK in
-    Httpcats.Server.string (`V1 response) body
+    Httpcats.Server.string ~headers ~status:`OK body
   in
   let stop, prm = server ~port:4000 handler in
   match
@@ -71,4 +70,55 @@ let test00 =
       Miou.await_exn prm;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err
 
-let () = Alcotest.run "client / server" [ ("simple", [ test00 ]) ]
+let generate g len =
+  let result = Bytes.create len in
+  for i = 0 to len - 1 do
+    Bytes.set result i (Char.chr (Random.State.bits g land 0xff))
+  done;
+  Bytes.unsafe_to_string result
+
+let test01 =
+  Alcotest.test_case "stream" `Quick @@ fun () ->
+  Miou_unix.run @@ fun () ->
+  let g0 = Random.State.make_self_init () in
+  let g1 = Random.State.copy g0 in
+  let max = 0x100000 in
+  let chunk = 0x10 in
+  let handler _request =
+    let open Httpcats.Server in
+    let headers =
+      Headers.of_list
+        [ ("content-type", "text/plain"); ("content-length", string_of_int max)
+        ]
+    in
+    let stream = Httpcats.Server.stream ~headers `OK in
+    let rec go rest =
+      if rest <= 0 then stream.close ()
+      else
+        let len = min chunk rest in
+        let str = generate g0 len in
+        begin
+          stream.write_string str;
+          go (rest - len)
+        end
+    in
+    go max
+  in
+  let stop, prm = server ~port:4000 handler in
+  match
+    Httpcats.request
+      ~f:(fun _resp buf str ->
+        Buffer.add_string buf str;
+        buf)
+      ~uri:"http://localhost:4000" (Buffer.create 0x1000)
+  with
+  | Ok (_response, buf) ->
+      Alcotest.(check string) "random" (generate g1 max) (Buffer.contents buf);
+      Atomic.set stop true;
+      Miou.await_exn prm
+  | Error err ->
+      Atomic.set stop true;
+      Miou.await_exn prm;
+      Alcotest.failf "Got an error: %a" Httpcats.pp_error err
+
+let () = Alcotest.run "network" [ ("simple", [ test00; test01 ]) ]

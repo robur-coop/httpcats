@@ -14,8 +14,6 @@ module C = Runtime.Make (TLS) (H2.Server_connection)
 
 type config = [ `V1 of Httpaf.Config.t | `V2 of H2.Config.t ]
 type flow = [ `Tls of TLS.t | `Tcp of Miou_unix.file_descr ]
-type request = [ `V1 of Httpaf.Request.t | `V2 of H2.Request.t ]
-type response = [ `V1 of Httpaf.Response.t | `V2 of H2.Response.t ]
 
 type error =
   [ `V1 of Httpaf.Server_connection.error
@@ -35,8 +33,32 @@ let pp_error ppf = function
 let src = Logs.Src.create "http-miou-server"
 
 module Log = (val Logs.src_log src : Logs.LOG)
+module Method = H2.Method
+module Headers = H2.Headers
+module Status = H2.Status
 
 exception Body_already_sent
+
+type request =
+  { meth : Method.t; target : string; scheme : string; headers : Headers.t }
+
+type response = { status : Status.t; headers : Headers.t }
+
+let response_to_httpaf response =
+  let headers = Httpaf.Headers.of_list (H2.Headers.to_list response.headers) in
+  let status =
+    match response.status with
+    | #Httpaf.Status.t as status -> status
+    | _ -> invalid_arg "Invalid HTTP/1.1 status"
+  in
+  Httpaf.Response.create ~headers status
+
+let _response_to_h2 response =
+  H2.Response.create ~headers:response.headers response.status
+
+let request_from_httpaf ~scheme { Httpaf.Request.meth; target; headers; _ } =
+  let headers = Headers.of_list (Httpaf.Headers.to_list headers) in
+  { meth; target; scheme; headers }
 
 type stream =
   { write_string : ?off:int -> ?len:int -> string -> unit
@@ -48,9 +70,17 @@ type _ Effect.t += String : response * string -> unit Effect.t
 type _ Effect.t += Bigstring : response * Bigstringaf.t -> unit Effect.t
 type _ Effect.t += Stream : response -> stream Effect.t
 
-let string response str = Effect.perform (String (response, str))
-let bigstring response bstr = Effect.perform (Bigstring (response, bstr))
-let stream response = Effect.perform (Stream response)
+let string ~status ?(headers = Headers.empty) str =
+  let response = { status; headers } in
+  Effect.perform (String (response, str))
+
+let bigstring ~status ?(headers = Headers.empty) bstr =
+  let response = { status; headers } in
+  Effect.perform (Bigstring (response, bstr))
+
+let stream ?(headers = Headers.empty) status =
+  let response = { status; headers } in
+  Effect.perform (Stream response)
 
 type error_handler =
   ?request:request -> error -> (H2.Headers.t -> stream) -> unit
@@ -76,8 +106,8 @@ let rec basic_handler ~exnc =
   in
   { retc; exnc; effc }
 
-let httpaf_handler ~sockaddr ~protect:{ Runtime.protect } ~orphans ~handler reqd
-    =
+let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
+    ~handler reqd =
   let open Httpaf in
   let open Effect.Shallow in
   let retc = Fun.id in
@@ -85,12 +115,14 @@ let httpaf_handler ~sockaddr ~protect:{ Runtime.protect } ~orphans ~handler reqd
   let effc :
       type c. c Effect.t -> ((c, 'a) Effect.Shallow.continuation -> 'b) option =
     function
-    | String (`V1 response, str) ->
+    | String (response, str) ->
+        let response = response_to_httpaf response in
         Log.debug (fun m -> m "write a http/1.1 response and its body");
         protect ~orphans (Reqd.respond_with_string reqd response) str;
         let handler = basic_handler ~exnc in
         Some (fun k -> continue_with k () handler)
-    | Stream (`V1 response) ->
+    | Stream response ->
+        let response = response_to_httpaf response in
         let body =
           protect ~orphans (Reqd.respond_with_streaming reqd) response
         in
@@ -107,11 +139,12 @@ let httpaf_handler ~sockaddr ~protect:{ Runtime.protect } ~orphans ~handler reqd
     | _ -> None
   in
   let fn request =
+    let request = request_from_httpaf ~scheme request in
     handler request;
     Runtime.terminate orphans;
     Log.debug (fun m -> m "the handler for %a has ended" pp_sockaddr sockaddr)
   in
-  continue_with (fiber fn) (`V1 (Reqd.request reqd)) { retc; exnc; effc }
+  continue_with (fiber fn) (Reqd.request reqd) { retc; exnc; effc }
 
 let rec clean orphans =
   match Miou.care orphans with
@@ -157,6 +190,9 @@ let clear ?stop ?(config = Httpaf.Config.default)
           let orphans = Miou.orphans () in
           let rec error_handler ?request err respond =
             let { Runtime.protect }, _, _ = Lazy.force process in
+            let request =
+              Option.map (request_from_httpaf ~scheme:"http") request
+            in
             let respond hdrs =
               let open Httpaf in
               let hdrs = Httpaf.Headers.of_list (H2.Headers.to_list hdrs) in
@@ -170,14 +206,14 @@ let clear ?stop ?(config = Httpaf.Config.default)
               let close () = protect ~orphans Body.close_writer body in
               { write_string; write_bigstring; close }
             in
-            let request = Option.map (fun request -> `V1 request) request in
             match err with
             | `Exn (Runtime.Flow msg) ->
                 user's_error_handler ?request (`Protocol msg :> error) respond
             | err -> user's_error_handler ?request (`V1 err) respond
           and request_handler reqd =
             let protect, _, _ = Lazy.force process in
-            httpaf_handler ~sockaddr ~protect ~orphans ~handler reqd
+            httpaf_handler ~sockaddr ~scheme:"http" ~protect ~orphans ~handler
+              reqd
           and conn =
             lazy
               (Httpaf.Server_connection.create ~config ~error_handler
