@@ -20,6 +20,7 @@ depends: [
   "dns-client"
   "happy-eyeballs"
   "progress"
+  "alcotest" {with-test}
 ]
 conflicts: [ "result" {< "1.5"} ]
 build: [
