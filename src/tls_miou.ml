@@ -146,6 +146,18 @@ module Make (Flow : Flow.S) = struct
         drain_handshake tls_flow
     | Error err -> Error (`Write err)
 
+  let server_of_flow config flow =
+    let tls_flow =
+      { role = `Server
+      ; flow
+      ; state = `Active (Tls.Engine.server config)
+      ; linger = None
+      ; recv = Bytes.create 0x1000
+      ; writer_closed = false
+      }
+    in
+    drain_handshake tls_flow
+
   let writev flow bufs =
     if flow.writer_closed then Error `Closed
     else

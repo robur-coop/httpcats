@@ -31,3 +31,15 @@ val clear :
   -> handler:handler
   -> Miou_unix.file_descr
   -> unit
+
+val with_tls :
+     ?stop:bool Atomic.t
+  -> ?config:
+       [ `H2 of H2.Config.t
+       | `HTTP_1_1 of Httpaf.Config.t
+       | `Both of Httpaf.Config.t * H2.Config.t ]
+  -> ?error_handler:error_handler
+  -> Tls.Config.server
+  -> handler:handler
+  -> Miou_unix.file_descr
+  -> unit

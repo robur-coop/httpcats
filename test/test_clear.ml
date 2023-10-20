@@ -121,4 +121,8 @@ let test01 =
       Miou.await_exn prm;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err
 
-let () = Alcotest.run "network" [ ("simple", [ test00; test01 ]) ]
+let () =
+  let stdout = Alcotest_engine.Global.make_stdout () in
+  let stderr = Alcotest_engine.Global.make_stderr () in
+  Alcotest.run ~stdout ~stderr "network"
+    [ ("simple", [ test00; test01 ]) ]
