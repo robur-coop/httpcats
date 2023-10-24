@@ -13,7 +13,7 @@ let to_sockaddr (ipaddr, port) =
   Unix.ADDR_INET (Ipaddr_unix.to_inet_addr ipaddr, port)
 
 let clock = Mtime_clock.elapsed_ns
-let he_timer_interval = Duration.(to_f (of_ms 100))
+let he_timer_interval = Duration.(to_f (of_ms 10))
 
 type state =
   | In_progress
@@ -266,13 +266,13 @@ let await_actions t he () =
   in
   List.fold_left fold (he, []) user's_actions
 
-let get_events t he ~prms =
+let rec get_events t he ~prms actions =
   match Option.map (handle t) (Option.join (Miou.care prms)) |> Option.join with
   | Some event ->
-      let he, actions = Happy_eyeballs.event he (clock ()) event in
+      let he, actions' = Happy_eyeballs.event he (clock ()) event in
       (* NOTE(dinosaure): prioritise event's actions. *)
-      (he, actions)
-  | None -> (he, [])
+      get_events t he ~prms (actions @ actions')
+  | None -> (he, actions)
 
 exception Timeout
 
@@ -284,7 +284,7 @@ let with_timeout ~timeout ?(give = []) fn =
   Miou.await_first [ Miou.call_cc timeout; Miou.call_cc ~give fn ]
 
 let suspend t he ~prms =
-  match get_events t he ~prms with
+  match get_events t he ~prms [] with
   | he, (_ :: _ as actions) -> (he, actions)
   | he, [] -> (
       match with_timeout ~timeout:he_timer_interval (await_actions t he) with
@@ -322,8 +322,8 @@ and go t ~prms he () =
       Miou.yield ();
       go t ~prms he ()
   | _, actions ->
-      let he, actions' = get_events t he ~prms in
-      List.iter (handle_one_action ~prms t) (actions @ actions');
+      let he, actions = get_events t he ~prms actions in
+      List.iter (handle_one_action ~prms t) actions;
       Miou.yield ();
       go t ~prms he ()
 
@@ -416,7 +416,9 @@ let rec read_loop ?(linger = Cstruct.empty) ~id proto fd =
       let len = Miou_unix.read fd ~off:0 ~len:(Bytes.length buf) buf in
       Log.debug (fun m -> m "got %d byte(s) from the resolver" len);
       if len > 0 then process (Cstruct.of_bytes ~off:0 ~len buf)
-      else failwith "End of file reading from resolver"
+      else
+        Fmt.failwith "End of file reading from resolver (linger: %d byte(s))"
+          (Cstruct.length linger)
 
 external happy_translate_so_type : int -> Unix.socket_type
   = "happy_translate_so_type"

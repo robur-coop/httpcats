@@ -232,34 +232,28 @@ let alpn_protocol = function
           None
       | None -> None)
 
-let connect ?port ?tls_config host =
+let connect ?port ?tls_config ~happy_eyeballs host =
   let port =
     match (port, tls_config) with
     | None, None -> 80
     | None, Some _ -> 443
     | Some port, _ -> port
   in
-  match Unix.gethostbyname host with
-  | { Unix.h_addr_list; _ } when Array.length h_addr_list > 0 ->
-      let inet_addr = h_addr_list.(0) in
-      let fd =
-        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
-        else Miou_unix.tcpv4 ()
-      in
-      let sockaddr = Unix.ADDR_INET (inet_addr, port) in
-      begin
-        match (Miou_unix.connect fd sockaddr, tls_config) with
-        | exception _ -> error_msgf "Impossible to connect to %s" host
-        | (), None -> Ok (`Tcp fd)
-        | (), Some tls_config ->
-            let ( >>= ) = Result.bind in
-            Http_miou_unix.to_tls tls_config fd
-            |> Result.map_error (fun err -> `Tls err)
-            >>= fun socket -> Ok (`Tls socket)
-      end
-  | _ -> error_msgf "%s not found" host
+  match (Happy.connect_endpoint happy_eyeballs host [ port ], tls_config) with
+  | Ok ((ipaddr, port), file_descr), None ->
+      Log.debug (fun m -> m "connect to %a:%d" Ipaddr.pp ipaddr port);
+      Ok (`Tcp file_descr)
+  | Ok ((ipaddr, port), file_descr), Some tls_config ->
+      Log.debug (fun m ->
+          m "connect to %a:%d and start to upgrade to tls" Ipaddr.pp ipaddr port);
+      let ( >>= ) = Result.bind in
+      Http_miou_unix.to_tls tls_config file_descr
+      |> Result.map_error (fun err -> `Tls err)
+      >>= fun file_descr -> Ok (`Tls file_descr)
+  | (Error _ as err), _ -> err
 
-let single_request ?http_config tls_config ~meth ~headers ?body uri f acc =
+let single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers ?body
+    uri f acc =
   let ( let* ) = Result.bind in
   let ( let+ ) x f = Result.map f x in
   let* tls, scheme, user_pass, host, port, path = decode_uri uri in
@@ -276,7 +270,7 @@ let single_request ?http_config tls_config ~meth ~headers ?body uri f acc =
       | `Default cfg, _ -> Some cfg
     else Ok None
   in
-  let* flow = connect ?port ?tls_config host in
+  let* flow = connect ?port ?tls_config ~happy_eyeballs host in
   match (alpn_protocol flow, http_config) with
   | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
       single_http_1_1_request ~config flow user_pass host meth path headers body
@@ -306,7 +300,8 @@ let resolve_location ~uri ~location =
   | _ -> error_msgf "Unknown location (relative path): %S" location
 
 let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
-    ?body ?(max_redirect = 5) ?(follow_redirect = true) ~f ~uri acc =
+    ?body ?(max_redirect = 5) ?(follow_redirect = true) ~resolver:happy_eyeballs
+    ~f ~uri acc =
   let tls_config =
     match tls_config with
     | Some cfg -> Ok (`Custom cfg)
@@ -333,14 +328,16 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
     | None -> None
   in
   if not follow_redirect then
-    single_request ?http_config tls_config ~meth ~headers ?body uri f acc
+    single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers ?body
+      uri f acc
   else
     let ( >>= ) = Result.bind in
     let rec follow_redirect count uri =
       if count = 0 then Error (`Msg "Redirect limit exceeded")
       else
         match
-          single_request ?http_config tls_config ~meth ~headers ?body uri f acc
+          single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers
+            ?body uri f acc
         with
         | Error _ as err -> err
         | Ok (resp, body) ->

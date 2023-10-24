@@ -1,4 +1,4 @@
-# A simple HTTP client (http/1.1 & h2) with [Miou][miou]
+# A simple HTTP client/server (http/1.1 & h2) with [Miou][miou]
 
 ![httpcats](./httpcats.gif)
 
