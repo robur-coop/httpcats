@@ -53,21 +53,24 @@ let test00 =
     Httpcats.Server.string ~headers ~status:`OK body
   in
   let stop, prm = server ~port:4000 handler in
+  let daemon, resolver = Happy.stack () in
   match
-    Httpcats.request
+    Httpcats.request ~resolver
       ~f:(fun _resp buf str ->
         Buffer.add_string buf str;
         buf)
-      ~uri:"http://localhost:4000/" (Buffer.create 0x10)
+      ~uri:"http://127.0.0.1:4000/" (Buffer.create 0x10)
   with
   | Ok (_response, buf) ->
       Alcotest.(check string)
         "Hello World!" (Buffer.contents buf) "Hello World!";
       Atomic.set stop true;
-      Miou.await_exn prm
+      Miou.await_exn prm;
+      Happy.kill daemon
   | Error err ->
       Atomic.set stop true;
       Miou.await_exn prm;
+      Happy.kill daemon;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err
 
 let generate g len =
@@ -105,24 +108,26 @@ let test01 =
     go max
   in
   let stop, prm = server ~port:4000 handler in
+  let daemon, resolver = Happy.stack () in
   match
-    Httpcats.request
+    Httpcats.request ~resolver
       ~f:(fun _resp buf str ->
         Buffer.add_string buf str;
         buf)
-      ~uri:"http://localhost:4000" (Buffer.create 0x1000)
+      ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
   with
   | Ok (_response, buf) ->
       Alcotest.(check string) "random" (generate g1 max) (Buffer.contents buf);
       Atomic.set stop true;
-      Miou.await_exn prm
+      Miou.await_exn prm;
+      Happy.kill daemon
   | Error err ->
       Atomic.set stop true;
       Miou.await_exn prm;
+      Happy.kill daemon;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err
 
 let () =
   let stdout = Alcotest_engine.Global.make_stdout () in
   let stderr = Alcotest_engine.Global.make_stderr () in
-  Alcotest.run ~stdout ~stderr "network"
-    [ ("simple", [ test00; test01 ]) ]
+  Alcotest.run ~stdout ~stderr "network" [ ("simple", [ test00; test01 ]) ]

@@ -22,9 +22,9 @@ let reporter ppf =
   { Logs.report }
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
-let () = Logs.set_reporter (reporter Fmt.stderr)
 
-(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
+(* let () = Logs.set_reporter (reporter Fmt.stderr) *)
+let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
@@ -62,7 +62,7 @@ let epr fmt =
 
 type reporter = All_knowning of int Progress.Reporter.t | Unknown of int
 
-let download ~orphans ~events ~uid ~uri =
+let download ~orphans ~events ~uid ~resolver ~uri =
   let _prm =
     Miou.call ~orphans @@ fun () ->
     let got_response = ref false in
@@ -75,7 +75,7 @@ let download ~orphans ~events ~uid ~uri =
       end;
       Miou.Queue.enqueue events (`Data (uid, String.length str))
     in
-    match Httpcats.request ~uri ~f () with
+    match Httpcats.request ~resolver ~uri ~f () with
     | Ok (_response, ()) -> Miou.Queue.enqueue events (`End uid)
     | Error err -> Miou.Queue.enqueue events (`Error (uid, err))
   in
@@ -96,9 +96,10 @@ type t =
   ; reporters : reporter array
   ; display : display
   ; align : int
+  ; resolver : Happy.stack
   }
 
-let make ~filenames =
+let make ~resolver ~filenames =
   let gen = Atomic.make 0 in
   let orphans = Miou.orphans () in
   let events = Miou.Queue.create () in
@@ -116,7 +117,7 @@ let make ~filenames =
       0 filenames
   in
   let [] = Progress.Display.reporters display in
-  { gen; orphans; events; reporters; display; align }
+  { gen; orphans; events; reporters; display; align; resolver }
 
 let get_length { Httpcats.headers; _ } =
   let headers = H2.Headers.to_list headers in
@@ -165,10 +166,13 @@ let consume t events =
         | All_knowning reporter -> Progress.Reporter.finalise reporter
         | _ -> ())
     | `Error (uid, err) ->
+        Progress.interject_with (fun () ->
+            Fmt.pr "[%a]: %a\n%!"
+              Fmt.(styled `Red string)
+              "ERROR" Httpcats.pp_error err);
         Logs.err (fun m ->
             m "Got an error for (%04d): %a" uid Httpcats.pp_error err)
   in
-  Logs.debug (fun m -> m "Handle %d event(s)" (List.length events));
   List.iter handle events
 
 let rec run t uris () =
@@ -181,7 +185,7 @@ let rec run t uris () =
   | None, uri :: rest ->
       download ~orphans:t.orphans ~events:t.events
         ~uid:(Atomic.fetch_and_add t.gen 1)
-        ~uri;
+        ~resolver:t.resolver ~uri;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
       run t rest ()
@@ -189,7 +193,7 @@ let rec run t uris () =
       Option.iter Miou.await_exn prm;
       download ~orphans:t.orphans ~events:t.events
         ~uid:(Atomic.fetch_and_add t.gen 1)
-        ~uri;
+        ~resolver:t.resolver ~uri;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
       run t rest ()
@@ -236,6 +240,14 @@ let () =
       uris
   in
   Logs.debug (fun m -> m "Got %d uri(s)" (List.length uris));
-  let t = make ~filenames in
+  let daemon, resolver = Happy.stack () in
+  let nameservers =
+    (`Tcp, [ `Plaintext (Ipaddr.of_string_exn "8.8.8.8", 53) ])
+  in
+  let dns = Dns_miou.create ~nameservers resolver in
+  Happy.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
+  let t = make ~resolver ~filenames in
   let prm = Miou.call_cc (run t uris) in
-  Miou.await_exn prm
+  let result = Miou.await prm in
+  Happy.kill daemon;
+  match result with Ok () -> () | Error exn -> raise exn
