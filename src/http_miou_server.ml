@@ -342,7 +342,7 @@ let h2s_server_connection ~config ~sockaddr ~user's_error_handler ~handler
   and process =
     lazy (C.run (Lazy.force conn) ~give ~disown ~read_buffer_size file_descr)
   in
-  let _, prm, _close = Lazy.force process in
+  let _, prm, close = Lazy.force process in
   Log.debug (fun m -> m "the h2 server connection is launched");
   let _result = Miou.await prm in
   Runtime.terminate orphans;
