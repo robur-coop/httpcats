@@ -66,8 +66,8 @@ let epoch tls =
   | `End_of_input | `Error _ -> None
   | `Active tls -> (
       match Tls.Engine.epoch tls with
-      | `InitialEpoch -> assert false
-      | `Epoch data -> Some data)
+      | Error () -> assert false
+      | Ok data -> Some data)
 
 (* Implementations. *)
 
