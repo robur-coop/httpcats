@@ -1,0 +1,3 @@
+(executable
+ (name server)
+ (libraries fmt.tty logs.fmt logs.threaded httpcats))
