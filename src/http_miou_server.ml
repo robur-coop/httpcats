@@ -197,19 +197,30 @@ let rec clean orphans =
 
 let default_error_handler ?request:_ _err _respond = ()
 
+exception Stop
+
+let wait ~stop () =
+  Miou_unix.Cond.wait stop;
+  raise_notrace Stop
+
 let accept_or_stop ?stop file_descr =
   match stop with
-  | None -> `Accept (Miou_unix.accept file_descr)
+  | None -> Some (Miou_unix.accept file_descr)
   | Some stop -> (
       let accept =
         Miou.call_cc ~give:[ Miou_unix.owner file_descr ] @@ fun () ->
         let file_descr', sockaddr = Miou_unix.accept file_descr in
+        Log.debug (fun m ->
+            m "receive a new tcp/ip connection from: %a" pp_sockaddr sockaddr);
         Miou_unix.disown file_descr;
-        `Accept (Miou_unix.transfer file_descr', sockaddr)
+        (Miou_unix.transfer file_descr', sockaddr)
       in
-      let rec go () = if Atomic.get stop then `Stop else go (Miou.yield ()) in
-      Miou.await_first [ accept; Miou.call_cc go ] |> function
-      | Ok value -> value
+      let wait = Miou.call_cc (wait ~stop) in
+      Miou.await_first [ accept; wait ] |> function
+      | Ok value ->
+          let _ = Miou.await wait in
+          Some value
+      | Error Stop -> None
       | Error exn -> raise exn)
 
 let http_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
@@ -253,7 +264,7 @@ let http_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
   Log.debug (fun m -> m "the http/1.1 server connection is launched");
   let _result = Miou.await prm in
   Runtime.terminate orphans;
-  (* TODO(dinosaure): are you sure? [httpaf_handler] already did it. *)
+  Log.debug (fun m -> m "the http/1.1 server connection is ended");
   close ()
 
 let https_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
@@ -296,7 +307,6 @@ let https_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
   Log.debug (fun m -> m "the http/1.1 server connection is launched");
   let _result = Miou.await prm in
   Runtime.terminate orphans;
-  (* TODO(dinosaure): are you sure? [httpaf_handler] already did it. *)
   close ()
 
 let h2s_server_connection ~config ~sockaddr ~user's_error_handler ~handler
@@ -332,11 +342,10 @@ let h2s_server_connection ~config ~sockaddr ~user's_error_handler ~handler
   and process =
     lazy (C.run (Lazy.force conn) ~give ~disown ~read_buffer_size file_descr)
   in
-  let _, prm, close = Lazy.force process in
-  Log.debug (fun m -> m "the http/1.1 server connection is launched");
+  let _, prm, _close = Lazy.force process in
+  Log.debug (fun m -> m "the h2 server connection is launched");
   let _result = Miou.await prm in
   Runtime.terminate orphans;
-  (* TODO(dinosaure): are you sure? [httpaf_handler] already did it. *)
   close ()
 
 let clear ?stop ?(config = Httpaf.Config.default)
@@ -344,8 +353,8 @@ let clear ?stop ?(config = Httpaf.Config.default)
     file_descr =
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
-    | `Stop -> Runtime.terminate orphans
-    | `Accept (file_descr', sockaddr) ->
+    | None -> Runtime.terminate orphans
+    | Some (file_descr', sockaddr) ->
         Log.debug (fun m -> m "receive a new client: %a" pp_sockaddr sockaddr);
         clean orphans;
         let give = [ Miou_unix.owner file_descr' ] in
@@ -364,8 +373,8 @@ let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
     ~handler file_descr =
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
-    | `Stop -> Runtime.terminate orphans
-    | `Accept (file_descr', sockaddr) ->
+    | None -> Runtime.terminate orphans
+    | Some (file_descr', sockaddr) ->
         clean orphans;
         let give = [ Miou_unix.owner file_descr' ] in
         let _ =

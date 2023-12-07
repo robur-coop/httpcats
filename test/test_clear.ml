@@ -22,20 +22,21 @@ let reporter ppf =
   { Logs.report }
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
-let () = Logs.set_reporter (reporter Fmt.stderr)
+
+(* let () = Logs.set_reporter (reporter Fmt.stderr) *)
 let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
 let server ?(port = 8080) handler =
-  let stop = Atomic.make false in
+  let stop = Miou_unix.Cond.make () in
   let prm =
     Miou.call @@ fun () ->
     let file_descr = Miou_unix.tcpv4 () in
     Miou_unix.bind_and_listen file_descr
       (Unix.ADDR_INET (Unix.inet_addr_loopback, port));
     Httpcats.Server.clear ~stop ~handler file_descr;
-    Miou_unix.close file_descr
+    Miou_unix.disown file_descr
   in
   (stop, prm)
 
@@ -64,11 +65,11 @@ let test00 =
   | Ok (_response, buf) ->
       Alcotest.(check string)
         "Hello World!" (Buffer.contents buf) "Hello World!";
-      Atomic.set stop true;
+      Miou_unix.Cond.signal stop;
       Miou.await_exn prm;
       Happy.kill daemon
   | Error err ->
-      Atomic.set stop true;
+      Miou_unix.Cond.signal stop;
       Miou.await_exn prm;
       Happy.kill daemon;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err
@@ -118,11 +119,11 @@ let test01 =
   with
   | Ok (_response, buf) ->
       Alcotest.(check string) "random" (generate g1 max) (Buffer.contents buf);
-      Atomic.set stop true;
+      Miou_unix.Cond.signal stop;
       Miou.await_exn prm;
       Happy.kill daemon
   | Error err ->
-      Atomic.set stop true;
+      Miou_unix.Cond.signal stop;
       Miou.await_exn prm;
       Happy.kill daemon;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err

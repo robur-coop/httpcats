@@ -181,6 +181,7 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
     let[@warning "-8"] (`V1 response : Http_miou_client.response) = response in
     f (from_httpaf response) acc str
   in
+  Log.debug (fun m -> m "start to send the http/1.1 request");
   match Http_miou_client.run ~f acc (`V1 config) flow (`V1 request) with
   | Process (V2, _, _) -> assert false
   | Process (V1, await, { body = stream; write_string; close; release }) -> (
@@ -241,7 +242,7 @@ let connect ?port ?tls_config ~happy_eyeballs host =
   in
   match (Happy.connect_endpoint happy_eyeballs host [ port ], tls_config) with
   | Ok ((ipaddr, port), file_descr), None ->
-      Log.debug (fun m -> m "connect to %a:%d" Ipaddr.pp ipaddr port);
+      Log.debug (fun m -> m "connected to %a:%d" Ipaddr.pp ipaddr port);
       Ok (`Tcp file_descr)
   | Ok ((ipaddr, port), file_descr), Some tls_config ->
       Log.debug (fun m ->

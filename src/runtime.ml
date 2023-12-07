@@ -345,7 +345,7 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
             terminate orphans
         | `Close _ ->
             Log.debug (fun m -> m "%a next write operation: `close" pp_prm prm);
-            Flow.shutdown flow `Send;
+            let () = try Flow.shutdown flow `Send with _exn -> disown flow in
             terminate orphans
       in
       let orphans = Miou.orphans () in

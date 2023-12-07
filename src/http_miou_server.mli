@@ -25,7 +25,7 @@ type error_handler =
 type handler = request -> unit
 
 val clear :
-     ?stop:bool Atomic.t
+     ?stop:Miou_unix.Cond.t
   -> ?config:Httpaf.Config.t
   -> ?error_handler:error_handler
   -> handler:handler
@@ -33,7 +33,7 @@ val clear :
   -> unit
 
 val with_tls :
-     ?stop:bool Atomic.t
+     ?stop:Miou_unix.Cond.t
   -> ?config:
        [ `H2 of H2.Config.t
        | `HTTP_1_1 of Httpaf.Config.t
