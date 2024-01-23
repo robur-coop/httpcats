@@ -63,15 +63,19 @@ let request_from_httpaf ~scheme { Httpaf.Request.meth; target; headers; _ } =
 let request_from_h2 { H2.Request.meth; target; scheme; headers } =
   { meth; target; scheme; headers }
 
-type stream =
+type output =
   { write_string : ?off:int -> ?len:int -> string -> unit
   ; write_bigstring : ?off:int -> ?len:int -> Bigstringaf.t -> unit
   ; close : unit -> unit
   }
 
+type on_read = Bigstringaf.t -> off:int -> len:int -> unit
+type on_eof = unit -> unit
+type input = { schedule : on_eof:on_eof -> on_read:on_read -> unit } [@@unboxed]
 type _ Effect.t += String : response * string -> unit Effect.t
 type _ Effect.t += Bigstring : response * Bigstringaf.t -> unit Effect.t
-type _ Effect.t += Stream : response -> stream Effect.t
+type _ Effect.t += Stream : response -> output Effect.t
+type _ Effect.t += Get : input Effect.t
 
 let string ~status ?(headers = Headers.empty) str =
   let response = { status; headers } in
@@ -85,8 +89,10 @@ let stream ?(headers = Headers.empty) status =
   let response = { status; headers } in
   Effect.perform (Stream response)
 
+let get () = Effect.perform Get
+
 type error_handler =
-  ?request:request -> error -> (H2.Headers.t -> stream) -> unit
+  ?request:request -> error -> (H2.Headers.t -> output) -> unit
 
 type handler = request -> unit
 
@@ -112,18 +118,31 @@ let rec basic_handler ~exnc =
 let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
     ~handler reqd =
   let open Httpaf in
-  let open Effect.Shallow in
-  let retc = Fun.id in
-  let exnc = protect ~orphans (Reqd.report_exn reqd) in
-  let effc :
-      type c. c Effect.t -> ((c, 'a) Effect.Shallow.continuation -> 'b) option =
+  let open Effect.Deep in
+  let rec retc = Fun.id
+  and exnc = protect ~orphans (Reqd.report_exn reqd)
+  and effc :
+      type c. c Effect.t -> ((c, 'a) Effect.Deep.continuation -> 'b) option =
     function
+    | Get ->
+        let body = Httpaf.Reqd.request_body reqd in
+        let schedule ~on_eof ~on_read =
+          let on_eof () =
+            match_with on_eof () { retc; exnc; effc };
+            protect ~orphans Httpaf.Body.close_reader body;
+            Runtime.terminate orphans (* XXX(dinosaure): really important! *)
+          in
+          protect ~orphans
+            (match_with (Httpaf.Body.schedule_read ~on_eof ~on_read) body)
+            { retc; exnc; effc }
+        in
+        Log.debug (fun m -> m "return a stream of the body request");
+        Some (fun k -> continue k { schedule })
     | String (response, str) ->
         let response = response_to_httpaf response in
         Log.debug (fun m -> m "write a http/1.1 response and its body");
         protect ~orphans (Reqd.respond_with_string reqd response) str;
-        let handler = basic_handler ~exnc in
-        Some (fun k -> continue_with k () handler)
+        Some (fun k -> continue k ())
     | Stream response ->
         let response = response_to_httpaf response in
         let body =
@@ -137,8 +156,7 @@ let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
         in
         let close () = protect ~orphans Body.close_writer body in
         let stream = { write_string; write_bigstring; close } in
-        let handler = basic_handler ~exnc in
-        Some (fun k -> continue_with k stream handler)
+        Some (fun k -> continue k stream)
     | _ -> None
   in
   let fn request =
@@ -147,7 +165,7 @@ let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
     Runtime.terminate orphans;
     Log.debug (fun m -> m "the handler for %a has ended" pp_sockaddr sockaddr)
   in
-  continue_with (fiber fn) (Reqd.request reqd) { retc; exnc; effc }
+  match_with fn (Reqd.request reqd) { retc; exnc; effc }
 
 let h2_handler ~sockaddr ~protect:{ Runtime.protect } ~orphans ~handler reqd =
   let open H2 in
@@ -307,6 +325,7 @@ let https_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
   Log.debug (fun m -> m "the http/1.1 server connection is launched");
   let _result = Miou.await prm in
   Runtime.terminate orphans;
+  Log.debug (fun m -> m "the http/1.1 server connection is ended");
   close ()
 
 let h2s_server_connection ~config ~sockaddr ~user's_error_handler ~handler

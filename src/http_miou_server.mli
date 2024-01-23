@@ -9,18 +9,23 @@ module Status = H2.Status
 type request =
   { meth : Method.t; target : string; scheme : string; headers : Headers.t }
 
-type stream =
+type output =
   { write_string : ?off:int -> ?len:int -> string -> unit
   ; write_bigstring : ?off:int -> ?len:int -> Bigstringaf.t -> unit
   ; close : unit -> unit
   }
 
+type on_read = Bigstringaf.t -> off:int -> len:int -> unit
+type on_eof = unit -> unit
+type input = { schedule : on_eof:on_eof -> on_read:on_read -> unit } [@@unboxed]
+
 val string : status:Status.t -> ?headers:Headers.t -> string -> unit
 val bigstring : status:Status.t -> ?headers:Headers.t -> Bigstringaf.t -> unit
-val stream : ?headers:Headers.t -> Status.t -> stream
+val stream : ?headers:Headers.t -> Status.t -> output
+val get : unit -> input
 
 type error_handler =
-  ?request:request -> error -> (H2.Headers.t -> stream) -> unit
+  ?request:request -> error -> (H2.Headers.t -> output) -> unit
 
 type handler = request -> unit
 
