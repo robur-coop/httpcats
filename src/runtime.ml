@@ -371,6 +371,9 @@ module Make (Flow : Flow.S) (Runtime : RUNTIME) :
       match result with
       | Ok () -> disown flow
       | Error exn ->
+          Log.err (fun m ->
+              m "got an error at the end of our waiters: %S"
+                (Printexc.to_string exn));
           close ();
           raise exn
     in

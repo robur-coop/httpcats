@@ -21,6 +21,7 @@ depends: [
   "happy-eyeballs"
   "progress"
   "alcotest" {with-test}
+  "digestif" {with-test}
 ]
 conflicts: [ "result" {< "1.5"} ]
 build: [

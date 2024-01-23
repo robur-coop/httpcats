@@ -22,8 +22,7 @@ let reporter ppf =
   { Logs.report }
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
-
-(* let () = Logs.set_reporter (reporter Fmt.stderr) *)
+let () = Logs.set_reporter (reporter Fmt.stderr)
 let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
@@ -128,7 +127,66 @@ let test01 =
       Happy.kill daemon;
       Alcotest.failf "Got an error: %a" Httpcats.pp_error err
 
+let to_string { Httpcats.Server.schedule } k =
+  let buf = Buffer.create 0x1000 in
+  let rec on_eof () = k (Buffer.contents buf)
+  and on_read bstr ~off ~len =
+    let str = Bigstringaf.substring ~off ~len bstr in
+    Buffer.add_string buf str;
+    schedule ~on_eof ~on_read
+  in
+  schedule ~on_eof ~on_read
+
+let sha1 = Alcotest.testable Digestif.SHA1.pp Digestif.SHA1.equal
+
+let random_string ~len =
+  let res = Bytes.create len in
+  for i = 0 to len - 1 do
+    Bytes.set res i (Char.unsafe_chr (Random.bits () land 0xff))
+  done;
+  Bytes.unsafe_to_string res
+
+let test02 =
+  Alcotest.test_case "post" `Quick @@ fun () ->
+  Miou_unix.run @@ fun () ->
+  let handler _request =
+    let open Httpcats.Server in
+    let stream = get () in
+    to_string stream @@ fun body ->
+    let hash = Digestif.SHA1.digest_string body in
+    let hash = Digestif.SHA1.to_hex hash in
+    let headers =
+      Headers.of_list
+        [ ("content-type", "text/plain")
+        ; ("content-length", string_of_int (String.length hash)) ]
+    in
+    Httpcats.Server.string ~headers ~status:`OK hash
+  in
+  let stop, prm = server ~port:4000 handler in
+  let daemon, resolver = Happy.stack () in
+  let body = random_string ~len:0x1000000 in
+  match
+    Httpcats.request ~resolver ~meth:`POST ~body
+      ~f:(fun _resp buf str ->
+        Buffer.add_string buf str;
+        buf)
+      ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
+  with
+  | Ok (_response, buf) ->
+      let hash' = Digestif.SHA1.of_hex (Buffer.contents buf) in
+      let hash = Digestif.SHA1.digest_string body in
+      Alcotest.(check sha1) "sha1" hash hash';
+      Miou_unix.Cond.signal stop;
+      Miou.await_exn prm;
+      Happy.kill daemon
+  | Error err ->
+      Miou_unix.Cond.signal stop;
+      Miou.await_exn prm;
+      Happy.kill daemon;
+      Alcotest.failf "Got an error: %a" Httpcats.pp_error err
+
 let () =
   let stdout = Alcotest_engine.Global.make_stdout () in
   let stderr = Alcotest_engine.Global.make_stderr () in
-  Alcotest.run ~stdout ~stderr "network" [ ("simple", [ test00; test01 ]) ]
+  Alcotest.run ~stdout ~stderr "network"
+    [ ("simple", [ test00; test01; test02 ]) ]

@@ -6,4 +6,4 @@
 (test
  (name test_clear)
  (modules test_clear)
- (libraries logs.fmt fmt.tty logs.threaded httpcats alcotest))
+ (libraries logs.fmt fmt.tty logs.threaded digestif httpcats alcotest))
