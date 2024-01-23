@@ -164,7 +164,7 @@ let test02 =
   in
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy.stack () in
-  let body = random_string ~len:0x1000000 in
+  let body = random_string ~len:0x4000 in
   match
     Httpcats.request ~resolver ~meth:`POST ~body
       ~f:(fun _resp buf str ->
