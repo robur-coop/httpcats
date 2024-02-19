@@ -9,6 +9,7 @@ end
 module A = Runtime.Make (TLS_for_httpaf) (Httpaf.Server_connection)
 module B = Runtime.Make (TCP) (Httpaf.Server_connection)
 module C = Runtime.Make (TLS) (H2.Server_connection)
+module D = Runtime.Make (TLS) (Websocket.Server_connection)
 
 [@@@warning "-34"]
 
@@ -165,7 +166,7 @@ let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
         let input_stream, output_stream =
           (* TODO(dinosaure): créer des streams! Sûrement avec [orphans] pour terminer tout les promesses issues des streams, pas sûr. *) _ in
         let w = Websocket.Server_connection.create ~sha1 websocket_user's_handler in
-        let _, prm, close = (* Websocket! *) C.run ~give ~disown w in
+        let _, prm, close = (* Websocket! *) D.run ~give ~disown w in
         Some (fun k ->
           let res = continue (input_stream, output_stream) in
           Websocket.close wsocket;
