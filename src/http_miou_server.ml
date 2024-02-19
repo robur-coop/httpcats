@@ -77,6 +77,9 @@ type _ Effect.t += Bigstring : response * Bigstringaf.t -> unit Effect.t
 type _ Effect.t += Stream : response -> output Effect.t
 type _ Effect.t += Get : input Effect.t
 
+(* TODO(dinosaure): On rajoute l'effet Websocket. *)
+type _ Effect.t += Websocket : input_stream * output_stream Effect.
+
 let string ~status ?(headers = Headers.empty) str =
   let response = { status; headers } in
   Effect.perform (String (response, str))
@@ -157,6 +160,17 @@ let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
         let close () = protect ~orphans Body.close_writer body in
         let stream = { write_string; write_bigstring; close } in
         Some (fun k -> continue k stream)
+    | Websocket ->
+        let orphans = Miou.orphans () in
+        let input_stream, output_stream =
+          (* TODO(dinosaure): créer des streams! Sûrement avec [orphans] pour terminer tout les promesses issues des streams, pas sûr. *) _ in
+        let w = Websocket.Server_connection.create ~sha1 websocket_user's_handler in
+        let _, prm, close = (* Websocket! *) C.run ~give ~disown w in
+        Some (fun k ->
+          let res = continue (input_stream, output_stream) in
+          Websocket.close wsocket;
+          let _ = Miou.await_exn prm in
+          res);
     | _ -> None
   in
   let fn request =
