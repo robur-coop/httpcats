@@ -1,6 +1,10 @@
-let src = Logs.Src.create "http-client"
+let src = Logs.Src.create "httpcats"
 
 module Log = (val Logs.src_log src : Logs.LOG)
+module Flow = Flow
+module Runtime = Runtime
+module Client = Http_miou_client
+module Server = Http_miou_server
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
@@ -105,19 +109,12 @@ let prep_h2_headers headers (host : string) user_pass blen =
       (H2.Headers.get headers "host", H2.Headers.get headers ":authority")
     with
     | None, None -> (headers, host)
-    | Some h, None ->
-        Log.debug (fun m ->
-            m "removing host header (inserting authority instead)");
-        (H2.Headers.remove headers "host", h)
+    | Some h, None -> (H2.Headers.remove headers "host", h)
     | None, Some a -> (H2.Headers.remove headers ":authority", a)
     | Some h, Some a ->
         if String.equal h a then
           (H2.Headers.remove (H2.Headers.remove headers ":authority") "host", h)
-        else begin
-          Log.warn (fun m ->
-              m "authority header %s mismatches host %s (keeping both)" a h);
-          (H2.Headers.remove headers ":authority", a)
-        end
+        else (H2.Headers.remove headers ":authority", a)
   in
   let add hdr = H2.Headers.add_unless_exists hdr ?sensitive:None in
   let hdr = H2.Headers.empty in
@@ -133,12 +130,20 @@ module Version = Httpaf.Version
 module Status = H2.Status
 module Headers = H2.Headers
 
-type response =
-  { version : Version.t
-  ; status : Status.t
-  ; reason : string
-  ; headers : Headers.t
-  }
+type response = {
+    version: Version.t
+  ; status: Status.t
+  ; reason: string
+  ; headers: Headers.t
+}
+
+let pp_response ppf resp =
+  Fmt.pf ppf
+    "@[<hov>{ version=@ %a;@ status=@ %s;@ reason=@ %S;@ headers=@ @[<hov>%a@] \
+     }@]"
+    Version.pp_hum resp.version
+    (Status.to_string resp.status)
+    resp.reason Headers.pp_hum resp.headers
 
 type error =
   [ `V1 of Httpaf.Client_connection.error
@@ -148,89 +153,90 @@ type error =
   | `Tls of Http_miou_unix.TLS.error ]
 
 let pp_error ppf = function
-  | `Protocol msg -> Fmt.string ppf msg
   | `Msg msg -> Fmt.string ppf msg
   | `Tls err -> Http_miou_unix.TLS.pp_error ppf err
-  | `V1 (`Malformed_response msg) ->
-      Fmt.pf ppf "Malformed HTTP/1.1 response: %s" msg
-  | `V1 (`Invalid_response_body_length _resp) ->
-      Fmt.pf ppf "Invalid response body length"
-  | `V1 (`Exn exn) | `V2 (`Exn exn) ->
-      Fmt.pf ppf "Got an unexpected exception: %S" (Printexc.to_string exn)
-  | `V2 (`Malformed_response msg) -> Fmt.pf ppf "Malformed H2 response: %s" msg
-  | `V2 (`Invalid_response_body_length _resp) ->
-      Fmt.pf ppf "Invalid response body length"
-  | `V2 (`Protocol_error (err, msg)) ->
-      Fmt.pf ppf "Protocol error %a: %s" H2.Error_code.pp_hum err msg
+  | #Client.error as err -> Client.pp_error ppf err
 
 let from_httpaf response =
-  { version = response.Httpaf.Response.version
-  ; status = (response.Httpaf.Response.status :> H2.Status.t)
-  ; reason = response.Httpaf.Response.reason
-  ; headers =
+  {
+    version= response.Httpaf.Response.version
+  ; status= (response.Httpaf.Response.status :> H2.Status.t)
+  ; reason= response.Httpaf.Response.reason
+  ; headers=
       H2.Headers.of_list
         (Httpaf.Headers.to_list response.Httpaf.Response.headers)
   }
 
-let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
-    host meth path headers body f acc =
-  let body_length = Option.map String.length body in
-  let headers = prep_http_1_1_headers headers host user_pass body_length in
-  let request = Httpaf.Request.create ~headers meth path in
-  let f response acc str =
-    let[@warning "-8"] (`V1 response : Http_miou_client.response) = response in
-    f (from_httpaf response) acc str
-  in
-  Log.debug (fun m -> m "start to send the http/1.1 request");
-  match Http_miou_client.run ~f acc (`V1 config) flow (`V1 request) with
-  | Process (V2, _, _) -> assert false
-  | Process (V1, await, { body = stream; write_string; close; release }) -> (
-      Option.iter (write_string stream) body;
-      close stream;
-      let result = await () in
-      release ();
-      match result with
-      | Ok (response, acc) -> Ok (from_httpaf response, acc)
-      | Error (#Http_miou_client.error as err) -> Error (err :> error))
-
 let from_h2 response =
-  { version = { major = 2; minor = 0 }
-  ; status = response.H2.Response.status
-  ; reason = ""
-  ; headers = response.H2.Response.headers
+  {
+    version= { major= 2; minor= 0 }
+  ; status= response.H2.Response.status
+  ; reason= ""
+  ; headers= response.H2.Response.headers
   }
 
-let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
-    meth path headers body f acc =
-  let body_length = Option.map String.length body in
-  let headers = prep_h2_headers headers host user_pass body_length in
-  let request = H2.Request.create ~scheme ~headers meth path in
+let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
+    host meth path headers contents f acc =
+  let contents_length = Option.map String.length contents in
+  let headers = prep_http_1_1_headers headers host user_pass contents_length in
+  let request = Httpaf.Request.create ~headers meth path in
   let f response acc str =
-    let[@warning "-8"] (`V2 response : Http_miou_client.response) = response in
+    let[@warning "-8"] (`V1 response : Client.response) = response in
+    f (from_httpaf response) acc str
+  in
+  match Client.run ~f acc (`V1 config) flow (`V1 request) with
+  | Process (V2, _, _) -> assert false
+  | Process (V1, await, body) -> (
+      let go orphans =
+        Option.iter (Httpaf.Body.write_string body) contents;
+        Runtime.terminate orphans
+      in
+      Runtime.flat_tasks go;
+      let finally () =
+        match flow with
+        | `Tls flow -> Http_miou_unix.TLS.close flow
+        | `Tcp flow -> Http_miou_unix.TCP.close flow
+      in
+      Fun.protect ~finally @@ fun () ->
+      match await () with
+      | Ok (response, acc) -> Ok (from_httpaf response, acc)
+      | Error (#Client.error as err) -> Error (err :> error))
+
+let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
+    meth path headers contents f acc =
+  let contents_length = Option.map String.length contents in
+  let headers = prep_h2_headers headers host user_pass contents_length in
+  let request = H2.Request.create ~scheme ~headers meth path in
+  let first = ref false in
+  let f response acc str =
+    let[@warning "-8"] (`V2 response : Client.response) = response in
+    if !first then (
+      Log.debug (fun m -> m "Response: %a" pp_response (from_h2 response));
+      first := false);
     f (from_h2 response) acc str
   in
-  match Http_miou_client.run ~f acc (`V2 config) flow (`V2 request) with
+  match Client.run ~f acc (`V2 config) flow (`V2 request) with
   | Process (V1, _, _) -> assert false
-  | Process (V2, await, { body = stream; write_string; close; release }) -> (
-      Option.iter (write_string stream) body;
-      close stream;
-      let result = await () in
-      release ();
-      match result with
+  | Process (V2, await, body) -> (
+      let go orphans =
+        Option.iter (H2.Body.Writer.write_string body) contents;
+        H2.Body.Writer.close body;
+        Log.debug (fun m -> m "writer terminates");
+        Runtime.terminate orphans
+      in
+      Runtime.flat_tasks go;
+      match await () with
       | Ok (response, acc) -> Ok (from_h2 response, acc)
-      | Error (#Http_miou_client.error as err) -> Error (err :> error))
+      | Error (#Client.error as err) -> Error (err :> error))
 
 let alpn_protocol = function
   | `Tcp _ -> None
   | `Tls tls -> (
       match Http_miou_unix.epoch tls with
-      | Some { Tls.Core.alpn_protocol = Some "h2"; _ } -> Some `H2
-      | Some { Tls.Core.alpn_protocol = Some "http/1.1"; _ } -> Some `HTTP_1_1
-      | Some { Tls.Core.alpn_protocol = None; _ } -> None
-      | Some { Tls.Core.alpn_protocol = Some protocol; _ } ->
-          Log.warn (fun m ->
-              m "The ALPN negotiation unexpectedly resulted in %S." protocol);
-          None
+      | Some { Tls.Core.alpn_protocol= Some "h2"; _ } -> Some `H2
+      | Some { Tls.Core.alpn_protocol= Some "http/1.1"; _ } -> Some `HTTP_1_1
+      | Some { Tls.Core.alpn_protocol= None; _ } -> None
+      | Some { Tls.Core.alpn_protocol= Some _; _ } -> None
       | None -> None)
 
 let connect ?port ?tls_config ~happy_eyeballs host =
@@ -240,13 +246,10 @@ let connect ?port ?tls_config ~happy_eyeballs host =
     | None, Some _ -> 443
     | Some port, _ -> port
   in
+  Log.debug (fun m -> m "Try to connect to %s" host);
   match (Happy.connect_endpoint happy_eyeballs host [ port ], tls_config) with
-  | Ok ((ipaddr, port), file_descr), None ->
-      Log.debug (fun m -> m "connected to %a:%d" Ipaddr.pp ipaddr port);
-      Ok (`Tcp file_descr)
-  | Ok ((ipaddr, port), file_descr), Some tls_config ->
-      Log.debug (fun m ->
-          m "connect to %a:%d and start to upgrade to tls" Ipaddr.pp ipaddr port);
+  | Ok ((_ipaddr, _port), file_descr), None -> Ok (`Tcp file_descr)
+  | Ok ((_ipaddr, _port), file_descr), Some tls_config ->
       let ( >>= ) = Result.bind in
       Http_miou_unix.to_tls tls_config file_descr
       |> Result.map_error (fun err -> `Tls err)
@@ -271,19 +274,26 @@ let single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers ?body
       | `Default cfg, _ -> Some cfg
     else Ok None
   in
+  Log.debug (fun m -> m "connect to %s (connected)" uri);
   let* flow = connect ?port ?tls_config ~happy_eyeballs host in
+  Log.debug (fun m -> m "single request to %s (connected)" uri);
   match (alpn_protocol flow, http_config) with
-  | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
+  | (Some `HTTP_1_1 | None), Some (`V1 config) ->
       single_http_1_1_request ~config flow user_pass host meth path headers body
         f acc
   | (Some `HTTP_1_1 | None), None ->
       single_http_1_1_request flow user_pass host meth path headers body f acc
-  | (Some `H2 | None), Some (`H2 config) ->
+  | (Some `H2 | None), Some (`V2 config) ->
       single_h2_request ~config flow scheme user_pass host meth path headers
         body f acc
   | Some `H2, None ->
       single_h2_request flow scheme user_pass host meth path headers body f acc
-  | _ -> assert false
+  | Some `H2, Some (`V1 _) ->
+      Log.warn (fun m -> m "ALPN protocol is h2 where user forces http/1.1");
+      single_h2_request flow scheme user_pass host meth path headers body f acc
+  | Some `HTTP_1_1, Some (`V2 _) ->
+      Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
+      single_http_1_1_request flow user_pass host meth path headers body f acc
 
 let resolve_location ~uri ~location =
   match String.split_on_char '/' location with
@@ -351,5 +361,3 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
             else Ok (resp, body)
     in
     follow_redirect max_redirect uri
-
-module Server = Http_miou_server

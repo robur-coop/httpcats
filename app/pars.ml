@@ -1,11 +1,9 @@
 let anchor = Unix.gettimeofday ()
+let () = Printexc.record_backtrace true
 
 let reporter ppf =
   let report src level ~over k msgf =
-    let k _ =
-      over ();
-      k ()
-    in
+    let k _ = over (); k () in
     let with_metadata header _tags k ppf fmt =
       Format.kfprintf k ppf
         ("[%a]%a[%a][%a]: " ^^ fmt ^^ "\n%!")
@@ -22,9 +20,9 @@ let reporter ppf =
   { Logs.report }
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
+let () = Logs.set_reporter (reporter Fmt.stderr)
 
-(* let () = Logs.set_reporter (reporter Fmt.stderr) *)
-let () = Logs.set_level ~all:true (Some Logs.Debug)
+(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
@@ -62,21 +60,37 @@ let epr fmt =
 
 type reporter = All_knowning of int Progress.Reporter.t | Unknown of int
 
+let get_length { Httpcats.headers; _ } =
+  let headers = H2.Headers.to_list headers in
+  let headers =
+    List.map (fun (k, v) -> (String.lowercase_ascii k, v)) headers
+  in
+  Option.map int_of_string (List.assoc_opt "content-length" headers)
+
 let download ~orphans ~events ~uid ~resolver ~uri =
   let _prm =
     Miou.call ~orphans @@ fun () ->
     let got_response = ref false in
+    let counter = ref 0 in
     let[@warning "-8"] (Ok (_, _, _, _, _, path)) = Httpcats.decode_uri uri in
     let f resp () str =
       if not !got_response then begin
         Miou.Queue.enqueue events
           (`Response (uid, Filename.basename path, resp));
+        Logs.debug (fun m ->
+            m "response for %s: %a" uri Httpcats.pp_response resp);
         got_response := true
       end;
+      let max = Option.value ~default:0 (get_length resp) in
+      counter := !counter + String.length str;
+      Logs.debug (fun m ->
+          m "got %d/%d byte(s) from %d:%s" !counter max uid uri);
       Miou.Queue.enqueue events (`Data (uid, String.length str))
     in
     match Httpcats.request ~resolver ~uri ~f () with
-    | Ok (_response, ()) -> Miou.Queue.enqueue events (`End uid)
+    | Ok (_response, ()) ->
+        Logs.debug (fun m -> m "%d:%s downloaded" uid uri);
+        Miou.Queue.enqueue events (`End uid)
     | Error err -> Miou.Queue.enqueue events (`Error (uid, err))
   in
   ()
@@ -89,15 +103,15 @@ type event =
 
 type display = (unit, unit) Progress.Display.t
 
-type t =
-  { gen : int Atomic.t
-  ; orphans : unit Miou.orphans
-  ; events : event Miou.Queue.t
-  ; reporters : reporter array
-  ; display : display
-  ; align : int
-  ; resolver : Happy.stack
-  }
+type t = {
+    gen: int Atomic.t
+  ; orphans: unit Miou.orphans
+  ; events: event Miou.Queue.t
+  ; reporters: reporter array
+  ; display: display
+  ; align: int
+  ; resolver: Happy.stack
+}
 
 let make ~resolver ~filenames =
   let gen = Atomic.make 0 in
@@ -118,13 +132,6 @@ let make ~resolver ~filenames =
   in
   let [] = Progress.Display.reporters display in
   { gen; orphans; events; reporters; display; align; resolver }
-
-let get_length { Httpcats.headers; _ } =
-  let headers = H2.Headers.to_list headers in
-  let headers =
-    List.map (fun (k, v) -> (String.lowercase_ascii k, v)) headers
-  in
-  Option.map int_of_string (List.assoc_opt "content-length" headers)
 
 let bar t ~filename ~response =
   match get_length response with
@@ -188,7 +195,7 @@ let rec run t uris () =
         ~resolver:t.resolver ~uri;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
-      run t rest ()
+      run t rest (Miou.yield ())
   | Some prm, uri :: rest ->
       Option.iter Miou.await_exn prm;
       download ~orphans:t.orphans ~events:t.events
@@ -196,12 +203,12 @@ let rec run t uris () =
         ~resolver:t.resolver ~uri;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
-      run t rest ()
+      run t rest (Miou.yield ())
   | Some prm, [] ->
       Option.iter Miou.await_exn prm;
       let events' = Miou.Queue.(to_list (transfer t.events)) in
       consume t events';
-      run t [] ()
+      run t [] (Miou.yield ())
 
 let get_uris_from_stdin () =
   let rec go acc =
@@ -212,8 +219,8 @@ let get_uris_from_stdin () =
   go []
 
 let getaddrinfo dns =
-  { Happy.getaddrinfo =
-      (fun record host -> Dns_miou.getaddrinfo dns record host)
+  {
+    Happy.getaddrinfo= (fun record host -> Dns_miou.getaddrinfo dns record host)
   }
 
 let sigpipe = 13

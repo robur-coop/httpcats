@@ -1,13 +1,8 @@
-open Httpcats.Server
-
 let anchor = Unix.gettimeofday ()
 
 let reporter ppf =
   let report src level ~over k msgf =
-    let k _ =
-      over ();
-      k ()
-    in
+    let k _ = over (); k () in
     let with_metadata header _tags k ppf fmt =
       Format.kfprintf k ppf
         ("[%a]%a[%a][%a]: " ^^ fmt ^^ "\n%!")
@@ -82,38 +77,38 @@ let listen sockaddr =
 let rec cleanup orphans =
   match Miou.care orphans with
   | None | Some None -> ()
-  | Some (Some prm) ->
-      Miou.await_exn prm;
-      cleanup orphans
+  | Some (Some prm) -> Miou.await_exn prm; cleanup orphans
 
-let handler request =
-  match request.target with
-  | "" | "/" | "/index.html" ->
-      let headers =
-        Headers.of_list
-          [ ("content-type", "text/html; charset=utf-8")
-          ; ("content-length", string_of_int (String.length index_html)) ]
-      in
-      string ~headers ~status:`OK index_html
-  | _ ->
-      let headers = Headers.of_list [ ("content-length", "0") ] in
-      string ~headers ~status:`Not_found ""
+let handler = function
+  | `V2 _ -> assert false
+  | `V1 reqd -> (
+      let open Httpaf in
+      let request = Reqd.request reqd in
+      match request.Request.target with
+      | "" | "/" | "/index.html" ->
+          let headers =
+            Headers.of_list
+              [
+                ("content-type", "text/html; charset=utf-8")
+              ; ("content-length", string_of_int (String.length index_html))
+              ]
+          in
+          let resp = Response.create ~headers `OK in
+          let body = Reqd.request_body reqd in
+          Body.close_reader body;
+          Reqd.respond_with_string reqd resp index_html
+      | _ ->
+          let headers = Headers.of_list [ ("content-length", "0") ] in
+          let resp = Response.create ~headers `Not_found in
+          Reqd.respond_with_string reqd resp "")
 
-let stop = Miou_unix.Cond.make ()
-
-let server sockaddr =
-  let file_descr = listen sockaddr in
-  Httpcats.Server.clear ~stop ~handler file_descr;
-  Miou_unix.disown file_descr
-
-let stop _ = Miou_unix.Cond.broadcast stop
+let server sockaddr = Httpcats.Server.clear ~handler sockaddr
 
 let () =
   let addr = sockaddr_of_arguments () in
-  let () = Sys.set_signal Sys.sigint (Signal_handle stop) in
   let () = Printexc.record_backtrace true in
-  Miou_unix.run @@ fun () ->
+  Miou_unix.run ~domains:3 @@ fun () ->
   let prm = Miou.call_cc @@ fun () -> server addr in
-  Miou.parallel server (List.init (Miou.Domain.count ()) (Fun.const addr))
+  Miou.parallel server (List.init 3 (Fun.const addr))
   |> List.iter (function Ok () -> () | Error exn -> raise exn);
   Miou.await_exn prm

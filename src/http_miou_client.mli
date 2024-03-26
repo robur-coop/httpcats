@@ -10,22 +10,15 @@ type error =
 
 val pp_error : error Fmt.t
 
-type 'body body =
-  { body : 'body
-  ; write_string : 'body -> ?off:int -> ?len:int -> string -> unit
-  ; close : 'body -> unit
-  ; release : unit -> unit
-  }
-
 type ('resp, 'body) version =
-  | V1 : (Httpaf.Response.t, [ `write ] Httpaf.Body.t body) version
-  | V2 : (H2.Response.t, H2.Body.Writer.t body) version
+  | V1 : (Httpaf.Response.t, [ `write ] Httpaf.Body.t) version
+  | V2 : (H2.Response.t, H2.Body.Writer.t) version
 
-type ('resp, 'acc) await = unit -> ('resp * 'acc, error) result
+type 'resp await = unit -> ('resp, error) result
 
 type 'acc process =
   | Process :
-      ('resp, 'body) version * ('resp, 'acc) await * 'body
+      ('resp, 'body) version * ('resp * 'acc) await * 'body
       -> 'acc process
 
 val run :

@@ -26,14 +26,16 @@ module Headers = H2.Headers
 
     Case-insensitive key-value pairs. *)
 
-type response =
-  { version : Version.t
-  ; status : Status.t
-  ; reason : string
-  ; headers : Headers.t
-  }
+type response = {
+    version: Version.t
+  ; status: Status.t
+  ; reason: string
+  ; headers: Headers.t
+}
 (** A response, consisting of version, status, reason (HTTP 1.1 only), and
     headers. *)
+
+val pp_response : response Fmt.t
 
 val request :
      ?config:[ `HTTP_1_1 of Httpaf.Config.t | `H2 of H2.Config.t ]
@@ -50,6 +52,7 @@ val request :
   -> 'a
   -> (response * 'a, error) result
 
+module Client = Http_miou_client
 module Server = Http_miou_server
 
 (**/**)
