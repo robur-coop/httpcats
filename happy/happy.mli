@@ -5,13 +5,13 @@ include
 
 type daemon
 
-type getaddrinfo =
-  { getaddrinfo :
+type getaddrinfo = {
+    getaddrinfo:
       'response 'a.
          'response Dns.Rr_map.key
       -> 'a Domain_name.t
       -> ('response, [ `Msg of string ]) result
-  }
+}
 [@@unboxed]
 
 val stack :
@@ -34,8 +34,6 @@ val inject_resolver : getaddrinfo:getaddrinfo -> stack -> unit
     {!val:connect_endpoint}. *)
 
 val kill : daemon -> unit
-(** [kill daemon] cleans resources required by our happy-eyeballs implementation.
-    The user {b must} call at the end of its application this function. *)
 
 val connect_ip :
      stack

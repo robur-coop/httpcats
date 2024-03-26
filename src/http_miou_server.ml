@@ -1,24 +1,21 @@
 open Http_miou_unix
+module A = Runtime.Make (TLS) (Httpaf.Server_connection)
 
-module TLS_for_httpaf = struct
-  include TLS
+module TCP_and_httpaf = struct
+  include TCP
 
-  let shutdown flow _ = Miou_unix.disown flow.flow
+  let shutdown flow = function `read -> () | value -> shutdown flow value
 end
 
-module A = Runtime.Make (TLS_for_httpaf) (Httpaf.Server_connection)
-module B = Runtime.Make (TCP) (Httpaf.Server_connection)
+module B = Runtime.Make (TCP_and_httpaf) (Httpaf.Server_connection)
 module C = Runtime.Make (TLS) (H2.Server_connection)
-
-[@@@warning "-34"]
-
-type config = [ `V1 of Httpaf.Config.t | `V2 of H2.Config.t ]
-type flow = [ `Tls of TLS.t | `Tcp of Miou_unix.file_descr ]
 
 type error =
   [ `V1 of Httpaf.Server_connection.error
   | `V2 of H2.Server_connection.error
   | `Protocol of string ]
+
+type stop = Miou.Mutex.t * Miou.Condition.t * bool ref
 
 let pp_error ppf = function
   | `V1 `Bad_request -> Fmt.string ppf "Bad HTTP/1.1 request"
@@ -37,24 +34,18 @@ module Method = H2.Method
 module Headers = H2.Headers
 module Status = H2.Status
 
-exception Body_already_sent
+type request = {
+    meth: Method.t
+  ; target: string
+  ; scheme: string
+  ; headers: Headers.t
+}
 
-type request =
-  { meth : Method.t; target : string; scheme : string; headers : Headers.t }
-
-type response = { status : Status.t; headers : Headers.t }
-
-let response_to_httpaf response =
-  let headers = Httpaf.Headers.of_list (H2.Headers.to_list response.headers) in
-  let status =
-    match response.status with
-    | #Httpaf.Status.t as status -> status
-    | _ -> invalid_arg "Invalid HTTP/1.1 status"
-  in
-  Httpaf.Response.create ~headers status
-
-let response_to_h2 response =
-  H2.Response.create ~headers:response.headers response.status
+type response = { status: Status.t; headers: Headers.t }
+type body = [ `V1 of [ `write ] Httpaf.Body.t | `V2 of H2.Body.Writer.t ]
+type reqd = [ `V1 of Httpaf.Reqd.t | `V2 of H2.Reqd.t ]
+type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
+type handler = reqd -> unit
 
 let request_from_httpaf ~scheme { Httpaf.Request.meth; target; headers; _ } =
   let headers = Headers.of_list (Httpaf.Headers.to_list headers) in
@@ -63,368 +54,207 @@ let request_from_httpaf ~scheme { Httpaf.Request.meth; target; headers; _ } =
 let request_from_h2 { H2.Request.meth; target; scheme; headers } =
   { meth; target; scheme; headers }
 
-type output =
-  { write_string : ?off:int -> ?len:int -> string -> unit
-  ; write_bigstring : ?off:int -> ?len:int -> Bigstringaf.t -> unit
-  ; close : unit -> unit
-  }
-
-type on_read = Bigstringaf.t -> off:int -> len:int -> unit
-type on_eof = unit -> unit
-type input = { schedule : on_eof:on_eof -> on_read:on_read -> unit } [@@unboxed]
-type _ Effect.t += String : response * string -> unit Effect.t
-type _ Effect.t += Bigstring : response * Bigstringaf.t -> unit Effect.t
-type _ Effect.t += Stream : response -> output Effect.t
-type _ Effect.t += Get : input Effect.t
-
-let string ~status ?(headers = Headers.empty) str =
-  let response = { status; headers } in
-  Effect.perform (String (response, str))
-
-let bigstring ~status ?(headers = Headers.empty) bstr =
-  let response = { status; headers } in
-  Effect.perform (Bigstring (response, bstr))
-
-let stream ?(headers = Headers.empty) status =
-  let response = { status; headers } in
-  Effect.perform (Stream response)
-
-let get () = Effect.perform Get
-
-type error_handler =
-  ?request:request -> error -> (H2.Headers.t -> output) -> unit
-
-type handler = request -> unit
-
-let pp_sockaddr ppf = function
-  | Unix.ADDR_UNIX name -> Fmt.pf ppf "<%s>" name
-  | Unix.ADDR_INET (inet_addr, port) ->
-      Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
-
-let rec basic_handler ~exnc =
-  let open Effect.Shallow in
-  let fail k = discontinue_with k Body_already_sent (basic_handler ~exnc) in
-  let retc = Fun.id in
-  let effc :
-      type c. c Effect.t -> ((c, 'a) Effect.Shallow.continuation -> 'b) option =
-    function
-    | String _ | Bigstring _ | Stream _ ->
-        Log.err (fun m -> m "the user wants to write to the peer a second time");
-        Some fail
-    | _ -> None
-  in
-  { retc; exnc; effc }
-
-let httpaf_handler ~sockaddr ~scheme ~protect:{ Runtime.protect } ~orphans
-    ~handler reqd =
-  let open Httpaf in
-  let open Effect.Deep in
-  let rec retc = Fun.id
-  and exnc = protect ~orphans (Reqd.report_exn reqd)
-  and effc :
-      type c. c Effect.t -> ((c, 'a) Effect.Deep.continuation -> 'b) option =
-    function
-    | Get ->
-        let body = Httpaf.Reqd.request_body reqd in
-        let schedule ~on_eof ~on_read =
-          let on_eof () =
-            match_with on_eof () { retc; exnc; effc };
-            protect ~orphans Httpaf.Body.close_reader body;
-            Runtime.terminate orphans (* XXX(dinosaure): really important! *)
-          in
-          protect ~orphans
-            (match_with (Httpaf.Body.schedule_read ~on_eof ~on_read) body)
-            { retc; exnc; effc }
-        in
-        Log.debug (fun m -> m "return a stream of the body request");
-        Some (fun k -> continue k { schedule })
-    | String (response, str) ->
-        let response = response_to_httpaf response in
-        Log.debug (fun m -> m "write a http/1.1 response and its body");
-        protect ~orphans (Reqd.respond_with_string reqd response) str;
-        Some (fun k -> continue k ())
-    | Stream response ->
-        let response = response_to_httpaf response in
-        let body =
-          protect ~orphans (Reqd.respond_with_streaming reqd) response
-        in
-        let write_string ?off ?len str =
-          protect ~orphans (Body.write_string body ?off ?len) str
-        in
-        let write_bigstring ?off ?len bstr =
-          protect ~orphans (Body.write_bigstring body ?off ?len) bstr
-        in
-        let close () = protect ~orphans Body.close_writer body in
-        let stream = { write_string; write_bigstring; close } in
-        Some (fun k -> continue k stream)
-    | _ -> None
-  in
-  let fn request =
-    let request = request_from_httpaf ~scheme request in
-    handler request;
-    Runtime.terminate orphans;
-    Log.debug (fun m -> m "the handler for %a has ended" pp_sockaddr sockaddr)
-  in
-  match_with fn (Reqd.request reqd) { retc; exnc; effc }
-
-let h2_handler ~sockaddr ~protect:{ Runtime.protect } ~orphans ~handler reqd =
-  let open H2 in
-  let open Effect.Shallow in
-  let retc = Fun.id in
-  let exnc = protect ~orphans (Reqd.report_exn reqd) in
-  let effc :
-      type c. c Effect.t -> ((c, 'a) Effect.Shallow.continuation -> 'b) option =
-    function
-    | String (response, str) ->
-        let response = response_to_h2 response in
-        Log.debug (fun m -> m "write a h2 response and its body");
-        protect ~orphans (Reqd.respond_with_string reqd response) str;
-        let handler = basic_handler ~exnc in
-        Some (fun k -> continue_with k () handler)
-    | Stream response ->
-        let response = response_to_h2 response in
-        let body =
-          protect ~orphans (Reqd.respond_with_streaming reqd) response
-        in
-        let write_string ?off ?len str =
-          protect ~orphans (Body.Writer.write_string body ?off ?len) str
-        in
-        let write_bigstring ?off ?len bstr =
-          protect ~orphans (Body.Writer.write_bigstring body ?off ?len) bstr
-        in
-        let close () = protect ~orphans Body.Writer.close body in
-        let stream = { write_string; write_bigstring; close } in
-        let handler = basic_handler ~exnc in
-        Some (fun k -> continue_with k stream handler)
-    | _ -> None
-  in
-  let fn request =
-    let request = request_from_h2 request in
-    handler request;
-    Runtime.terminate orphans;
-    Log.debug (fun m -> m "the handler for %a has ended" pp_sockaddr sockaddr)
-  in
-  continue_with (fiber fn) (Reqd.request reqd) { retc; exnc; effc }
-
-let rec clean orphans =
-  match Miou.care orphans with
-  | Some (Some prm) ->
-      Miou.await_exn prm;
-      clean orphans
-  | Some None | None -> ()
-
 let default_error_handler ?request:_ _err _respond = ()
+
+let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
+    flow =
+  let scheme = "http" in
+  let read_buffer_size = config.Httpaf.Config.read_buffer_size in
+  let error_handler ?request err respond =
+    let request = Option.map (request_from_httpaf ~scheme) request in
+    let err =
+      match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
+    in
+    Runtime.flat_tasks @@ fun orphans ->
+    let respond hdrs =
+      let hdrs = Httpaf.Headers.of_list (Headers.to_list hdrs) in
+      let body = respond hdrs in
+      `V1 body
+    in
+    user's_error_handler ?request err respond;
+    Runtime.terminate orphans
+  in
+  let request_handler reqd =
+    Runtime.flat_tasks @@ fun orphans ->
+    user's_handler (`V1 reqd);
+    Runtime.terminate orphans
+  in
+  let conn =
+    Httpaf.Server_connection.create ~config ~error_handler request_handler
+  in
+  Miou.await_exn (B.run conn ~read_buffer_size flow)
+
+let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
+    flow =
+  let scheme = "https" in
+  let read_buffer_size = config.Httpaf.Config.read_buffer_size in
+  let error_handler ?request err respond =
+    let request = Option.map (request_from_httpaf ~scheme) request in
+    let err =
+      match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
+    in
+    Runtime.flat_tasks @@ fun orphans ->
+    let respond hdrs =
+      let hdrs = Httpaf.Headers.of_list (Headers.to_list hdrs) in
+      let body = respond hdrs in
+      `V1 body
+    in
+    user's_error_handler ?request err respond;
+    Runtime.terminate orphans
+  in
+  let request_handler reqd =
+    Runtime.flat_tasks @@ fun orphans ->
+    user's_handler (`V1 reqd);
+    Runtime.terminate orphans
+  in
+  let conn =
+    Httpaf.Server_connection.create ~config ~error_handler request_handler
+  in
+  Miou.await_exn (A.run conn ~read_buffer_size flow)
+
+let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
+  let read_buffer_size = config.H2.Config.read_buffer_size in
+  let error_handler ?request err respond =
+    let request = Option.map request_from_h2 request in
+    let err =
+      match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V2 err
+    in
+    Runtime.flat_tasks @@ fun orphans ->
+    let respond hdrs = `V2 (respond hdrs) in
+    user's_error_handler ?request err respond;
+    Runtime.terminate orphans
+  in
+  let request_handler reqd =
+    Runtime.flat_tasks @@ fun orphans ->
+    user's_handler (`V2 reqd);
+    Runtime.terminate orphans
+  in
+  let conn =
+    H2.Server_connection.create ~config ~error_handler request_handler
+  in
+  Miou.await_exn (C.run conn ~read_buffer_size flow)
+
+let rec clean_up orphans =
+  match Miou.care orphans with
+  | None | Some None -> ()
+  | Some (Some prm) -> (
+      match Miou.await prm with
+      | Ok () -> clean_up orphans
+      | Error exn ->
+          Log.err (fun m ->
+              m "unexpected exception: %s" (Printexc.to_string exn));
+          clean_up orphans)
 
 exception Stop
 
-let wait ~stop () =
-  Miou_unix.Cond.wait stop;
-  raise_notrace Stop
+let rec wait ((m, c, v) as stop) () =
+  let value =
+    Miou.Mutex.protect m @@ fun () ->
+    while not !v do
+      Miou.Condition.wait c m
+    done;
+    !v
+  in
+  if value then raise Stop else wait stop ()
+
+let stop () = (Miou.Mutex.create (), Miou.Condition.create (), ref false)
+
+let switch (m, c, v) =
+  Miou.Mutex.protect m @@ fun () ->
+  v := true;
+  Miou.Condition.broadcast c
 
 let accept_or_stop ?stop file_descr =
   match stop with
   | None -> Some (Miou_unix.accept file_descr)
   | Some stop -> (
-      let accept =
-        Miou.call_cc ~give:[ Miou_unix.owner file_descr ] @@ fun () ->
-        let file_descr', sockaddr = Miou_unix.accept file_descr in
-        Log.debug (fun m ->
-            m "receive a new tcp/ip connection from: %a" pp_sockaddr sockaddr);
-        Miou_unix.disown file_descr;
-        (Miou_unix.transfer file_descr', sockaddr)
-      in
-      let wait = Miou.call_cc (wait ~stop) in
-      Miou.await_first [ accept; wait ] |> function
-      | Ok value ->
-          let _ = Miou.await wait in
-          Some value
+      let accept = Miou.call_cc @@ fun () -> Miou_unix.accept file_descr in
+      let wait = Miou.call_cc (wait stop) in
+      Log.debug (fun m -> m "waiting for a client");
+      match Miou.await_first [ accept; wait ] with
+      | Ok (fd, sockaddr) -> Some (fd, sockaddr)
       | Error Stop -> None
-      | Error exn -> raise exn)
+      | Error exn ->
+          Log.err (fun m ->
+              m "unexpected exception: %S" (Printexc.to_string exn));
+          raise exn)
 
-let http_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
-    file_descr =
-  let scheme = "http" in
-  let read_buffer_size = config.Httpaf.Config.read_buffer_size in
-  let give = [ Miou_unix.owner file_descr ] in
-  let orphans = Miou.orphans () in
-  let rec error_handler ?request err respond =
-    let { Runtime.protect }, _, _ = Lazy.force process in
-    let request = Option.map (request_from_httpaf ~scheme) request in
-    let respond hdrs =
-      let open Httpaf in
-      let hdrs = Httpaf.Headers.of_list (H2.Headers.to_list hdrs) in
-      let body = protect ~orphans respond hdrs in
-      let write_string ?off ?len str =
-        protect ~orphans (Body.write_string body ?off ?len) str
-      in
-      let write_bigstring ?off ?len bstr =
-        protect ~orphans (Body.write_bigstring body ?off ?len) bstr
-      in
-      let close () = protect ~orphans Body.close_writer body in
-      { write_string; write_bigstring; close }
-    in
-    match err with
-    | `Exn (Runtime.Flow msg) ->
-        user's_error_handler ?request (`Protocol msg :> error) respond
-    | err -> user's_error_handler ?request (`V1 err) respond
-  and request_handler reqd =
-    let protect, _, _ = Lazy.force process in
-    httpaf_handler ~sockaddr ~scheme ~protect ~orphans ~handler reqd
-  and conn =
-    lazy
-      (Httpaf.Server_connection.create ~config ~error_handler request_handler)
-  and process =
-    lazy
-      (B.run (Lazy.force conn) ~give ~disown:Miou_unix.disown ~read_buffer_size
-         file_descr)
-  in
-  let _, prm, close = Lazy.force process in
-  Log.debug (fun m -> m "the http/1.1 server connection is launched");
-  let _result = Miou.await prm in
-  Runtime.terminate orphans;
-  Log.debug (fun m -> m "the http/1.1 server connection is ended");
-  close ()
+let pp_sockaddr ppf = function
+  | Unix.ADDR_UNIX str -> Fmt.pf ppf "<%s>" str
+  | Unix.ADDR_INET (inet_addr, port) ->
+      Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
-let https_1_1_server_connection ~config ~sockaddr ~user's_error_handler ~handler
-    file_descr =
-  let scheme = "https" in
-  let read_buffer_size = config.Httpaf.Config.read_buffer_size in
-  let give = [ Miou_unix.owner file_descr.TLS.flow ] in
-  let disown flow = Miou_unix.disown flow.TLS.flow in
-  let orphans = Miou.orphans () in
-  let rec error_handler ?request err respond =
-    let { Runtime.protect }, _, _ = Lazy.force process in
-    let request = Option.map (request_from_httpaf ~scheme) request in
-    let respond hdrs =
-      let open Httpaf in
-      let hdrs = Httpaf.Headers.of_list (H2.Headers.to_list hdrs) in
-      let body = protect ~orphans respond hdrs in
-      let write_string ?off ?len str =
-        protect ~orphans (Body.write_string body ?off ?len) str
-      in
-      let write_bigstring ?off ?len bstr =
-        protect ~orphans (Body.write_bigstring body ?off ?len) bstr
-      in
-      let close () = protect ~orphans Body.close_writer body in
-      { write_string; write_bigstring; close }
-    in
-    match err with
-    | `Exn (Runtime.Flow msg) ->
-        user's_error_handler ?request (`Protocol msg :> error) respond
-    | err -> user's_error_handler ?request (`V1 err) respond
-  and request_handler reqd =
-    let protect, _, _ = Lazy.force process in
-    httpaf_handler ~sockaddr ~scheme ~protect ~orphans ~handler reqd
-  and conn =
-    lazy
-      (Httpaf.Server_connection.create ~config ~error_handler request_handler)
-  and process =
-    lazy (A.run (Lazy.force conn) ~give ~disown ~read_buffer_size file_descr)
-  in
-  let _, prm, close = Lazy.force process in
-  Log.debug (fun m -> m "the http/1.1 server connection is launched");
-  let _result = Miou.await prm in
-  Runtime.terminate orphans;
-  Log.debug (fun m -> m "the http/1.1 server connection is ended");
-  close ()
-
-let h2s_server_connection ~config ~sockaddr ~user's_error_handler ~handler
-    file_descr =
-  let read_buffer_size = config.H2.Config.read_buffer_size in
-  let give = [ Miou_unix.owner file_descr.TLS.flow ] in
-  let disown flow = Miou_unix.disown flow.TLS.flow in
-  let orphans = Miou.orphans () in
-  let rec error_handler ?request err respond =
-    let { Runtime.protect }, _, _ = Lazy.force process in
-    let request = Option.map request_from_h2 request in
-    let respond hdrs =
-      let open H2 in
-      let body = protect ~orphans respond hdrs in
-      let write_string ?off ?len str =
-        protect ~orphans (Body.Writer.write_string body ?off ?len) str
-      in
-      let write_bigstring ?off ?len bstr =
-        protect ~orphans (Body.Writer.write_bigstring body ?off ?len) bstr
-      in
-      let close () = protect ~orphans Body.Writer.close body in
-      { write_string; write_bigstring; close }
-    in
-    match err with
-    | `Exn (Runtime.Flow msg) ->
-        user's_error_handler ?request (`Protocol msg :> error) respond
-    | err -> user's_error_handler ?request (`V2 err) respond
-  and request_handler reqd =
-    let protect, _, _ = Lazy.force process in
-    h2_handler ~sockaddr ~protect ~orphans ~handler reqd
-  and conn =
-    lazy (H2.Server_connection.create ~config ~error_handler request_handler)
-  and process =
-    lazy (C.run (Lazy.force conn) ~give ~disown ~read_buffer_size file_descr)
-  in
-  let _, prm, close = Lazy.force process in
-  Log.debug (fun m -> m "the h2 server connection is launched");
-  let _result = Miou.await prm in
-  Runtime.terminate orphans;
-  close ()
-
-let clear ?stop ?(config = Httpaf.Config.default)
-    ?error_handler:(user's_error_handler = default_error_handler) ~handler
-    file_descr =
+let clear ?stop ?(config = Httpaf.Config.default) ?backlog
+    ?error_handler:(user's_error_handler = default_error_handler)
+    ~handler:user's_handler sockaddr =
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
-    | None -> Runtime.terminate orphans
-    | Some (file_descr', sockaddr) ->
-        Log.debug (fun m -> m "receive a new client: %a" pp_sockaddr sockaddr);
-        clean orphans;
-        let give = [ Miou_unix.owner file_descr' ] in
+    | None ->
+        Log.debug (fun m -> m "stop the server");
+        Runtime.terminate orphans;
+        Miou_unix.close file_descr
+    | Some (fd', sockaddr) ->
+        Log.debug (fun m ->
+            m "receive a connection from: %a" pp_sockaddr sockaddr);
+        clean_up orphans;
         let _ =
-          Miou.call ~orphans ~give @@ fun () ->
-          http_1_1_server_connection ~config ~sockaddr ~user's_error_handler
-            ~handler file_descr'
+          Miou.call ~orphans @@ fun () ->
+          http_1_1_server_connection ~config ~user's_error_handler
+            ~user's_handler fd'
         in
-        Miou_unix.disown file_descr';
         go orphans file_descr
   in
-  go (Miou.orphans ()) file_descr
+  let socket =
+    match sockaddr with
+    | Unix.ADDR_UNIX _ -> invalid_arg "Impossible to create a Unix socket"
+    | Unix.ADDR_INET (inet_addr, _) ->
+        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
+        else Miou_unix.tcpv4 ()
+  in
+  Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  go (Miou.orphans ()) socket
+
+let alpn tls =
+  match Http_miou_unix.epoch tls with
+  | Some { Tls.Core.alpn_protocol= protocol; _ } -> protocol
+  | None -> None
 
 let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
-    ?error_handler:(user's_error_handler = default_error_handler) tls_config
-    ~handler file_descr =
+    ?backlog ?error_handler:(user's_error_handler = default_error_handler)
+    tls_config ~handler:user's_handler sockaddr =
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
-    | None -> Runtime.terminate orphans
-    | Some (file_descr', sockaddr) ->
-        clean orphans;
-        let give = [ Miou_unix.owner file_descr' ] in
+    | None -> Runtime.terminate orphans; Miou_unix.close file_descr
+    | Some (fd', _sockaddr) ->
+        clean_up orphans;
         let _ =
-          Miou.call ~orphans ~give @@ fun () ->
-          match TLS.server_of_flow tls_config file_descr' with
+          Miou.call ~orphans @@ fun () ->
+          match TLS.server_of_flow tls_config fd' with
           | Error err ->
               Log.err (fun m ->
                   m "got a TLS error during the handshake: %a" TLS.pp_error err);
-              Miou_unix.close file_descr'
+              Miou_unix.close fd'
           | Ok tls_flow -> begin
-              match (config, epoch tls_flow) with
-              | `Both (_, h2), Some { Tls.Core.alpn_protocol = Some "h2"; _ }
-              | ( `H2 h2
-                , (Some { Tls.Core.alpn_protocol = Some "h2" | None; _ } | None)
-                ) ->
-                  h2s_server_connection ~config:h2 ~sockaddr
-                    ~user's_error_handler ~handler tls_flow
-              | ( `Both (httpaf, _)
-                , Some { Tls.Core.alpn_protocol = Some "http/1.1"; _ } )
-              | ( `HTTP_1_1 httpaf
-                , ( Some { Tls.Core.alpn_protocol = Some "http/1.1" | None; _ }
-                  | None ) ) ->
-                  https_1_1_server_connection ~config:httpaf ~sockaddr
-                    ~user's_error_handler ~handler tls_flow
-              | `Both _, (Some { Tls.Core.alpn_protocol = None; _ } | None) ->
-                  assert false
-              | _, Some { Tls.Core.alpn_protocol = Some _protocol; _ } ->
-                  assert false
+              match (config, alpn tls_flow) with
+              | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
+                  h2s_server_connection ~config:h2 ~user's_error_handler
+                    ~user's_handler tls_flow
+              | `Both (httpaf, _), Some "http/1.1"
+              | `HTTP_1_1 httpaf, (Some "http/1.1" | None) ->
+                  https_1_1_server_connection ~config:httpaf
+                    ~user's_error_handler ~user's_handler tls_flow
+              | `Both _, None -> assert false
+              | _, Some _protocol -> assert false
             end
         in
-        Miou_unix.disown file_descr';
         go orphans file_descr
   in
-  go (Miou.orphans ()) file_descr
+  let socket =
+    match sockaddr with
+    | Unix.ADDR_UNIX _ -> invalid_arg "Impossible to create a Unix socket"
+    | Unix.ADDR_INET (inet_addr, _) ->
+        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
+        else Miou_unix.tcpv4 ()
+  in
+  Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  go (Miou.orphans ()) socket

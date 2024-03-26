@@ -1,4 +1,4 @@
-module type RUNTIME = sig
+module type S = sig
   type t
 
   val next_read_operation : t -> [ `Read | `Yield | `Close ]
@@ -14,26 +14,14 @@ module type RUNTIME = sig
   val report_exn : t -> exn -> unit
 end
 
-type protect =
-  { protect : 'a 'b. orphans:unit Miou.orphans -> ('a -> 'b) -> 'a -> 'b }
-[@@unboxed]
-
 exception Flow of string
 
-module type S = sig
-  type conn
-  type flow
+module Make (Flow : Flow.S) (Runtime : S) : sig
+  type conn = Runtime.t
+  type flow = Flow.t
 
-  val run :
-       conn
-    -> ?give:Miou.Ownership.t list
-    -> ?disown:(flow -> unit)
-    -> read_buffer_size:int
-    -> flow
-    -> protect * unit Miou.t * (unit -> unit)
+  val run : conn -> read_buffer_size:int -> flow -> unit Miou.t
 end
 
-module Make (Flow : Flow.S) (Runtime : RUNTIME) :
-  S with type conn = Runtime.t and type flow = Flow.t
-
 val terminate : unit Miou.orphans -> unit
+val flat_tasks : (unit Miou.orphans -> unit) -> unit

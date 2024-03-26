@@ -1,11 +1,11 @@
-; (executable
-;  (name hurle)
-;  (modules hurle)
-;  (libraries logs.fmt fmt.tty logs.threaded mirage-crypto-rng.unix httpcats
-;    httpcats.happy hxd.string hxd.core))
+(executable
+ (name main)
+ (modules main)
+ (libraries logs.threaded logs.fmt fmt.tty mirage-crypto-rng.unix hxd.string
+   hxd.core dns_miou httpcats))
 
 (executable
  (name pars)
- (modules q pars)
+ (modules pars)
  (libraries duration fmt.tty logs.fmt logs.threaded mirage-crypto-rng.unix
-   httpcats httpcats.happy progress))
+   httpcats dns_miou happy progress))
