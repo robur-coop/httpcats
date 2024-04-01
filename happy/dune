@@ -1,5 +1,6 @@
 (library
  (name happy)
+ (public_name happy)
  (modules happy)
  (libraries miou.unix mtime.clock.os ipaddr.unix cstruct dns dns-client
    happy-eyeballs mirage-crypto-rng hxd.string hxd.core)
