@@ -13,13 +13,14 @@ EOF
 $ dune exec app/pars.exe -- < to_download.txt
 ```
 
-**NOTE**: it requires the upstream version of `miou`!
+**NOTE**: it requires the upstream version of `miou` and it pins few packages
+like `mirage-crypto` that we fixed but not yet released.
 
-- [x] Fix the issue between HTTP/1.1 and TLS (and close-notify)
 - [ ] Implement some tests
+  + [x] tests with `http/1.1` and without TLS (`GET` and `POST` with stream)
+  + [ ] tests with TLS
 - [ ] Documentation (.ml & .mli)
 - [ ] DNS resolution over UDP
 - [ ] DNS over TLS
-- [ ] happy-eyeballs
 
 [miou]: https://github.com/robur-coop/miou
