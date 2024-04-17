@@ -103,6 +103,7 @@ let handler = function
           Reqd.respond_with_string reqd resp "")
 
 let server sockaddr = Httpcats.Server.clear ~handler sockaddr
+let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
 
 let () =
   let addr = sockaddr_of_arguments () in

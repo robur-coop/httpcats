@@ -1,2 +1,8 @@
 (lang dune 2.0)
-(name http-client)
+(name httpcats)
+
+(package
+  (name httpcats))
+
+(package
+  (name happy))
