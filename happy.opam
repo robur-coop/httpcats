@@ -11,7 +11,6 @@ depends: [
   "dune" {>= "2.0.0"}
   "logs"
   "miou"
-  "happy"
   "httpaf" {>= "0.7.0"}
   "tls" {>= "0.17.0"}
   "fmt"
