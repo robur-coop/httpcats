@@ -1,0 +1,28 @@
+opam-version: "2.0"
+maintainer: "team AT robur dot coop"
+authors: ["Robur <team@robur.coop>"]
+homepage: "https://github.com/robur-coop/httpcats"
+bug-reports: "https://github.com/robur-coop/httpcats/issues"
+dev-repo: "git+https://github.com/robur-coop/httpcats.git"
+license: "BSD-2-Clause"
+
+build: [
+  [ "dune" "subst"] {dev}
+  [ "dune" "build" "-p" name "-j" jobs ]
+  [ "dune" "runtest" "-p" name "-j" jobs ] {with-test}
+]
+
+depends: [
+  "dune" {>="2.0.0"}
+  "ocaml" {>= "4.08.0"}
+  "dns-client" {= "7.0.3"}
+  "domain-name" {>= "0.4.0"}
+  "ipaddr" {>= "5.3.0"}
+  "miou" {>= "0.1.0"}
+  "happy-eyeballs" {>= "0.6.0"}
+  "happy"
+]
+synopsis: "DNS client API for Miou"
+description: """
+A client implementation using uDNS using Miou.
+"""

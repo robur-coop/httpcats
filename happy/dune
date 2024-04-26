@@ -11,6 +11,7 @@
 
 (library
  (name dns_miou)
+ (public_name dns-miou)
  (modules dns_miou)
  (libraries happy))
 
