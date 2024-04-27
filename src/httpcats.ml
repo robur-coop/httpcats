@@ -239,14 +239,57 @@ let alpn_protocol = function
       | Some { Tls.Core.alpn_protocol= Some _; _ } -> None
       | None -> None)
 
-let connect ?port ?tls_config ~happy_eyeballs host =
+let connect_system ?port ?tls_config host =
   let port =
     match (port, tls_config) with
     | None, None -> 80
     | None, Some _ -> 443
     | Some port, _ -> port
   in
-  Log.debug (fun m -> m "Try to connect to %s" host);
+  Log.debug (fun m -> m "try to connect to %s (with system)" host);
+  match Unix.gethostbyname host with
+  | exception Unix.Unix_error (err, f, v) ->
+      error_msgf "%s(%s): %s" f v (Unix.error_message err)
+  | { Unix.h_addr_list= [||]; _ } -> error_msgf "Impossible to resolve %s" host
+  | { Unix.h_addr_list; _ } -> (
+      let addr = Unix.ADDR_INET (h_addr_list.(0), port) in
+      let socket =
+        if Unix.is_inet6_addr h_addr_list.(0) then Miou_unix.tcpv4 ()
+        else Miou_unix.tcpv6 ()
+      in
+      let timeout = Miou.call_cc @@ fun () -> Miou_unix.sleep 5.0; `Timeout in
+      let connect =
+        Miou.call_cc @@ fun () ->
+        Miou_unix.connect socket addr;
+        `Connected
+      in
+      match Miou.await_first [ timeout; connect ] with
+      | Error exn ->
+          Miou_unix.close socket;
+          error_msgf "Got an unexpected exception while connecting: %s"
+            (Printexc.to_string exn)
+      | Ok `Timeout ->
+          Miou_unix.close socket;
+          error_msgf "Connection to %s (via %s:%d) timeout" host
+            (Unix.string_of_inet_addr h_addr_list.(0))
+            port
+      | Ok `Connected -> (
+          match tls_config with
+          | Some tls_config ->
+              let ( >>= ) = Result.bind in
+              Http_miou_unix.to_tls tls_config socket
+              |> Result.map_error (fun err -> `Tls err)
+              >>= fun socket -> Ok (`Tls socket)
+          | None -> Ok (`Tcp socket)))
+
+let connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host =
+  let port =
+    match (port, tls_config) with
+    | None, None -> 80
+    | None, Some _ -> 443
+    | Some port, _ -> port
+  in
+  Log.debug (fun m -> m "try to connect to %s (with happy-eyeballs)" host);
   match (Happy.connect_endpoint happy_eyeballs host [ port ], tls_config) with
   | Ok ((_ipaddr, _port), file_descr), None -> Ok (`Tcp file_descr)
   | Ok ((_ipaddr, _port), file_descr), Some tls_config ->
@@ -256,7 +299,7 @@ let connect ?port ?tls_config ~happy_eyeballs host =
       >>= fun file_descr -> Ok (`Tls file_descr)
   | (Error _ as err), _ -> err
 
-let single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers ?body
+let single_request ?happy_eyeballs ?http_config tls_config ~meth ~headers ?body
     uri f acc =
   let ( let* ) = Result.bind in
   let ( let+ ) x f = Result.map f x in
@@ -275,7 +318,12 @@ let single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers ?body
     else Ok None
   in
   Log.debug (fun m -> m "connect to %s (connected)" uri);
-  let* flow = connect ?port ?tls_config ~happy_eyeballs host in
+  let* flow =
+    match happy_eyeballs with
+    | Some happy_eyeballs ->
+        connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host
+    | None -> connect_system ?port ?tls_config host
+  in
   Log.debug (fun m -> m "single request to %s (connected)" uri);
   match (alpn_protocol flow, http_config) with
   | (Some `HTTP_1_1 | None), Some (`V1 config) ->
@@ -311,7 +359,7 @@ let resolve_location ~uri ~location =
   | _ -> error_msgf "Unknown location (relative path): %S" location
 
 let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
-    ?body ?(max_redirect = 5) ?(follow_redirect = true) ~resolver:happy_eyeballs
+    ?body ?(max_redirect = 5) ?(follow_redirect = true) ?resolver:happy_eyeballs
     ~f ~uri acc =
   let tls_config =
     match tls_config with
@@ -339,7 +387,7 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
     | None -> None
   in
   if not follow_redirect then
-    single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers ?body
+    single_request ?happy_eyeballs ?http_config tls_config ~meth ~headers ?body
       uri f acc
   else
     let ( >>= ) = Result.bind in
@@ -347,7 +395,7 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
       if count = 0 then Error (`Msg "Redirect limit exceeded")
       else
         match
-          single_request ~happy_eyeballs ?http_config tls_config ~meth ~headers
+          single_request ?happy_eyeballs ?http_config tls_config ~meth ~headers
             ?body uri f acc
         with
         | Error _ as err -> err
