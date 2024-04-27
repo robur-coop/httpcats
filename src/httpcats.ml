@@ -254,8 +254,8 @@ let connect_system ?port ?tls_config host =
   | { Unix.h_addr_list; _ } -> (
       let addr = Unix.ADDR_INET (h_addr_list.(0), port) in
       let socket =
-        if Unix.is_inet6_addr h_addr_list.(0) then Miou_unix.tcpv4 ()
-        else Miou_unix.tcpv6 ()
+        if Unix.is_inet6_addr h_addr_list.(0) then Miou_unix.tcpv6 ()
+        else Miou_unix.tcpv4 ()
       in
       let timeout = Miou.call_cc @@ fun () -> Miou_unix.sleep 5.0; `Timeout in
       let connect =
