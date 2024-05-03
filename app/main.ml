@@ -29,24 +29,38 @@ let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
 
 let getaddrinfo dns =
   {
-    Happy.getaddrinfo= (fun record host -> Dns_miou.getaddrinfo dns record host)
+    Happy_eyeballs_miou_unix.getaddrinfo=
+      (fun record host -> Dns_client_miou.getaddrinfo dns record host)
   }
+
+let google = `Plaintext (Ipaddr.of_string_exn "8.8.8.8", 53)
+
+let unicast_censurfridns_dk =
+  let unicast_censurfridns_dk = Ipaddr.of_string_exn "89.233.43.71" in
+  let time () = Some (Ptime.v (Ptime_clock.now_d_ps ())) in
+  let authenticator =
+    X509.Authenticator.of_string
+      "key-fp:sha256:INSZEZpDoWKiavosV2/xVT8O83vk/RRwS+LTiL+IpHs="
+    |> Result.get_ok
+  in
+  let cfg = Tls.Config.client ~authenticator:(authenticator time) () in
+  `Tls (cfg, unicast_censurfridns_dk, 853)
 
 let () =
   Miou_unix.run @@ fun () ->
-  let daemon, resolver = Happy.stack () in
-  let dns = Dns_miou.create resolver in
-  Happy.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
+  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let dns = Dns_client_miou.create ~nameservers:(`Udp, [ google ]) resolver in
+  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
   let f _resp buf str = Buffer.add_string buf str; buf in
   match
     Httpcats.request ~resolver ~f ~uri:Sys.argv.(1) (Buffer.create 0x100)
   with
   | Ok (_, body) ->
-      Happy.kill daemon;
+      Happy_eyeballs_miou_unix.kill daemon;
       Format.printf "@[<hov>%a@]\n%!"
         (Hxd_string.pp Hxd.default)
         (Buffer.contents body)
   | Error err ->
-      Happy.kill daemon;
+      Happy_eyeballs_miou_unix.kill daemon;
       Format.eprintf "%a\n%!" Httpcats.pp_error err;
       exit 1

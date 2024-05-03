@@ -12,13 +12,13 @@ module Httpaf_Client_connection = struct
     (next_read_operation t :> [ `Close | `Read | `Yield ])
 end
 
-module A = Runtime.Make (TLS) (Httpaf_Client_connection)
+module A = Runtime.Make (Tls_miou_unix) (Httpaf_Client_connection)
 module B = Runtime.Make (TCP) (Httpaf_Client_connection)
-module C = Runtime.Make (TLS) (H2.Client_connection)
+module C = Runtime.Make (Tls_miou_unix) (H2.Client_connection)
 module D = Runtime.Make (TCP) (H2.Client_connection)
 
 type config = [ `V1 of Httpaf.Config.t | `V2 of H2.Config.t ]
-type flow = [ `Tls of Http_miou_unix.TLS.t | `Tcp of Miou_unix.file_descr ]
+type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
 type request = [ `V1 of Httpaf.Request.t | `V2 of H2.Request.t ]
 type response = [ `V1 of Httpaf.Response.t | `V2 of H2.Response.t ]
 

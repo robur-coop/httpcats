@@ -149,12 +149,10 @@ type error =
   [ `V1 of Httpaf.Client_connection.error
   | `V2 of H2.Client_connection.error
   | `Protocol of string
-  | `Msg of string
-  | `Tls of Http_miou_unix.TLS.error ]
+  | `Msg of string ]
 
 let pp_error ppf = function
   | `Msg msg -> Fmt.string ppf msg
-  | `Tls err -> Http_miou_unix.TLS.pp_error ppf err
   | #Client.error as err -> Client.pp_error ppf err
 
 let from_httpaf response =
@@ -194,7 +192,7 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
       Runtime.flat_tasks go;
       let finally () =
         match flow with
-        | `Tls flow -> Http_miou_unix.TLS.close flow
+        | `Tls flow -> Tls_miou_unix.close flow
         | `Tcp flow -> Http_miou_unix.TCP.close flow
       in
       Fun.protect ~finally @@ fun () ->
@@ -232,7 +230,7 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
 let alpn_protocol = function
   | `Tcp _ -> None
   | `Tls tls -> (
-      match Http_miou_unix.epoch tls with
+      match Tls_miou_unix.epoch tls with
       | Some { Tls.Core.alpn_protocol= Some "h2"; _ } -> Some `H2
       | Some { Tls.Core.alpn_protocol= Some "http/1.1"; _ } -> Some `HTTP_1_1
       | Some { Tls.Core.alpn_protocol= None; _ } -> None
@@ -276,10 +274,8 @@ let connect_system ?port ?tls_config host =
       | Ok `Connected -> (
           match tls_config with
           | Some tls_config ->
-              let ( >>= ) = Result.bind in
-              Http_miou_unix.to_tls tls_config socket
-              |> Result.map_error (fun err -> `Tls err)
-              >>= fun socket -> Ok (`Tls socket)
+              let tls = Tls_miou_unix.client_of_fd tls_config socket in
+              Ok (`Tls tls)
           | None -> Ok (`Tcp socket)))
 
 let connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host =
@@ -290,13 +286,14 @@ let connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host =
     | Some port, _ -> port
   in
   Log.debug (fun m -> m "try to connect to %s (with happy-eyeballs)" host);
-  match (Happy.connect_endpoint happy_eyeballs host [ port ], tls_config) with
+  match
+    ( Happy_eyeballs_miou_unix.connect_endpoint happy_eyeballs host [ port ]
+    , tls_config )
+  with
   | Ok ((_ipaddr, _port), file_descr), None -> Ok (`Tcp file_descr)
   | Ok ((_ipaddr, _port), file_descr), Some tls_config ->
-      let ( >>= ) = Result.bind in
-      Http_miou_unix.to_tls tls_config file_descr
-      |> Result.map_error (fun err -> `Tls err)
-      >>= fun file_descr -> Ok (`Tls file_descr)
+      let tls = Tls_miou_unix.client_of_fd tls_config file_descr in
+      Ok (`Tls tls)
   | (Error _ as err), _ -> err
 
 let single_request ?happy_eyeballs ?http_config tls_config ~meth ~headers ?body

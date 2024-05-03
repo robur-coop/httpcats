@@ -4,26 +4,13 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 module TCP = struct
   type t = Miou_unix.file_descr
-  type error = [ `Unix of Unix.error * string * string | `Closed ]
 
-  let pp_error ppf = function
-    | `Unix (err, f, v) -> Fmt.pf ppf "%s(%s): %s" f v (Unix.error_message err)
-    | `Closed -> Fmt.string ppf "Connection closed by peer (tcp)"
+  let read flow ?off ?len buf =
+    try Miou_unix.read flow buf ?off ?len with
+    | Unix.Unix_error (Unix.ECONNRESET, _, _) -> 0
+    | Unix.Unix_error _ as exn -> raise exn
 
-  let read flow buf ~off ~len =
-    match Miou_unix.read flow buf off len with
-    | len -> Ok len
-    | exception Unix.Unix_error (Unix.ECONNRESET, _, _) -> Ok 0
-    | exception Unix.Unix_error (err, f, v) -> Error (`Unix (err, f, v))
-
-  let full_write flow ({ Cstruct.len; _ } as cs) =
-    let str = Cstruct.to_string cs in
-    Miou_unix.write flow str 0 len
-
-  let writev flow css =
-    let cs = Cstruct.concat css in
-    full_write flow cs; Ok ()
-
+  let write = Miou_unix.write
   let close = Miou_unix.close
 
   let shutdown flow cmd =
@@ -34,16 +21,3 @@ module TCP = struct
     with Unix.Unix_error (Unix.ENOTCONN, _, _) -> ()
   [@@ocamlformat "disable"]
 end
-
-module TLS = Tls_miou.Make (TCP)
-
-let to_tls cfg ?host flow = TLS.client_of_flow cfg ?host flow
-
-let epoch tls =
-  match tls.TLS.state with
-  | `Active tls ->
-      ( match Tls.Engine.epoch tls with
-      | Error () -> assert false
-      | Ok data -> Some data )
-  | _ -> None
-[@@ocamlformat "disable"]

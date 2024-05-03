@@ -4,6 +4,7 @@
  (libraries httpcats alcotest))
 
 (test
- (name test_clear)
- (modules test_clear)
- (libraries logs.fmt fmt.tty logs.threaded digestif httpcats alcotest))
+ (name test)
+ (modules test)
+ (libraries mirage-crypto-rng.unix rresult logs.fmt fmt.tty logs.threaded
+   digestif httpcats alcotest))

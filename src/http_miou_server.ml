@@ -1,5 +1,5 @@
 open Http_miou_unix
-module A = Runtime.Make (TLS) (Httpaf.Server_connection)
+module A = Runtime.Make (Tls_miou_unix) (Httpaf.Server_connection)
 
 module TCP_and_httpaf = struct
   include TCP
@@ -8,7 +8,7 @@ module TCP_and_httpaf = struct
 end
 
 module B = Runtime.Make (TCP_and_httpaf) (Httpaf.Server_connection)
-module C = Runtime.Make (TLS) (H2.Server_connection)
+module C = Runtime.Make (Tls_miou_unix) (H2.Server_connection)
 
 type error =
   [ `V1 of Httpaf.Server_connection.error
@@ -215,8 +215,13 @@ let clear ?stop ?(config = Httpaf.Config.default) ?backlog
   go (Miou.orphans ()) socket
 
 let alpn tls =
-  match Http_miou_unix.epoch tls with
-  | Some { Tls.Core.alpn_protocol= protocol; _ } -> protocol
+  match Tls_miou_unix.epoch tls with
+  | Some { Tls.Core.alpn_protocol= protocol; _ } ->
+      Log.debug (fun m ->
+          m "protocol of the incoming client: %a"
+            Fmt.(Dump.option string)
+            protocol);
+      protocol
   | None -> None
 
 let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
@@ -229,12 +234,9 @@ let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
         clean_up orphans;
         let _ =
           Miou.call ~orphans @@ fun () ->
-          match TLS.server_of_flow tls_config fd' with
-          | Error err ->
-              Log.err (fun m ->
-                  m "got a TLS error during the handshake: %a" TLS.pp_error err);
-              Miou_unix.close fd'
-          | Ok tls_flow -> begin
+          try
+            let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
+            begin
               match (config, alpn tls_flow) with
               | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
                   h2s_server_connection ~config:h2 ~user's_error_handler
@@ -246,6 +248,11 @@ let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
               | `Both _, None -> assert false
               | _, Some _protocol -> assert false
             end
+          with exn ->
+            Log.err (fun m ->
+                m "got a TLS error during the handshake: %s"
+                  (Printexc.to_string exn));
+            Miou_unix.close fd'
         in
         go orphans file_descr
   in

@@ -20,7 +20,8 @@ let reporter ppf =
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
-let () = Logs.set_level ~all:true (Some Logs.Debug)
+
+(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
@@ -108,8 +109,9 @@ let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
 let () =
   let addr = sockaddr_of_arguments () in
   let () = Printexc.record_backtrace true in
-  Miou_unix.run ~domains:3 @@ fun () ->
+  Miou_unix.run @@ fun () ->
+  let domains = Miou.Domain.available () in
   let prm = Miou.call_cc @@ fun () -> server addr in
-  Miou.parallel server (List.init 3 (Fun.const addr))
+  Miou.parallel server (List.init domains (Fun.const addr))
   |> List.iter (function Ok () -> () | Error exn -> raise exn);
   Miou.await_exn prm

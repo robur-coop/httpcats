@@ -46,7 +46,7 @@ val request :
   -> ?body:string
   -> ?max_redirect:int
   -> ?follow_redirect:bool
-  -> ?resolver:Happy.stack
+  -> ?resolver:Happy_eyeballs_miou_unix.happy
   -> f:(response -> 'a -> string -> 'a)
   -> uri:string
   -> 'a

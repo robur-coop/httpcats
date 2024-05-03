@@ -1,5 +1,5 @@
 type config = [ `V1 of Httpaf.Config.t | `V2 of H2.Config.t ]
-type flow = [ `Tls of Http_miou_unix.TLS.t | `Tcp of Miou_unix.file_descr ]
+type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
 type request = [ `V1 of Httpaf.Request.t | `V2 of H2.Request.t ]
 type response = [ `V1 of Httpaf.Response.t | `V2 of H2.Response.t ]
 

@@ -114,32 +114,24 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let bytes_read =
       Buffer.put buffer ~f:(fun bstr ~off:dst_off ~len ->
           let buf = Bytes.create len in
-          match Flow.read flow buf ~off:0 ~len with
-          | Ok 0 -> 0
-          | Ok len ->
-              Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len;
-              len
-          | Error err ->
-              Flow.close flow;
-              raise (Flow (Fmt.str "%a" Flow.pp_error err)))
+          try
+            let len = Flow.read flow buf ~off:0 ~len in
+            Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len;
+            len
+          with exn -> Flow.close flow; raise exn)
     in
     if bytes_read = 0 then `Eof else `Ok bytes_read
 
   let writev flow bstrs =
-    let copy { Faraday.buffer; off; len } = Bigstringaf.copy buffer ~off ~len in
-    let css = List.map copy bstrs |> List.map Cstruct.of_bigarray in
-    List.iter
-      (fun cs ->
-        Log.debug (fun m ->
-            m "-> @[<hov>%a@]"
-              (Hxd_string.pp Hxd.default)
-              (Cstruct.to_string cs)))
-      css;
-    match Flow.writev flow css with
-    | Ok () ->
-        let len = List.fold_left (fun a { Cstruct.len; _ } -> a + len) 0 css in
-        `Ok len
-    | Error _ -> Flow.close flow; `Closed
+    let copy { Faraday.buffer; off; len } =
+      Bigstringaf.substring buffer ~off ~len
+    in
+    let strs = List.map copy bstrs in
+    let len = List.fold_left (fun a str -> a + String.length str) 0 strs in
+    try
+      List.iter (Flow.write flow) strs;
+      `Ok len
+    with _exn -> Flow.close flow; `Closed
 
   let run conn ~read_buffer_size flow =
     let buffer = Buffer.create read_buffer_size in
