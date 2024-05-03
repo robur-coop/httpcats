@@ -49,7 +49,7 @@ module Ca = struct
         ])
 
   let cacert_lifetime = Ptime.Span.v (365, 0L)
-  let cacert_serial_number = Z.zero
+  let cacert_serial_number = Z.one
 
   let make domain_name seed =
     Domain_name.of_string domain_name >>= Domain_name.host

@@ -2,5 +2,3 @@
 (name httpcats)
 
 (package (name httpcats))
-(package (name happy))
-(package (name dns-miou))

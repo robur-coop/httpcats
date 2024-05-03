@@ -221,7 +221,7 @@ let get_uris_from_stdin () =
 let getaddrinfo dns =
   {
     Happy_eyeballs_miou_unix.getaddrinfo=
-      (fun record host -> Dns_client_miou.getaddrinfo dns record host)
+      (fun record host -> Dns_client_miou_unix.getaddrinfo dns record host)
   }
 
 let sigpipe = 13
@@ -252,7 +252,7 @@ let () =
   let nameservers =
     (`Udp, [ `Plaintext (Ipaddr.of_string_exn "8.8.8.8", 53) ])
   in
-  let dns = Dns_client_miou.create ~nameservers resolver in
+  let dns = Dns_client_miou_unix.create ~nameservers resolver in
   Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
   let t = make ~resolver ~filenames in
   let prm = Miou.call_cc (run t uris) in
