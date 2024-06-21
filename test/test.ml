@@ -181,11 +181,11 @@ let test01 =
         let resp = Response.create ~headers `OK in
         let body = Reqd.respond_with_streaming reqd resp in
         let rec go rest =
-          if rest <= 0 then Body.close_writer body
+          if rest <= 0 then Body.Writer.close body
           else
             let len = min chunk rest in
             let str = generate g0 len in
-            Body.write_string body str;
+            Body.Writer.write_string body str;
             go (rest - len)
         in
         go max
@@ -220,14 +220,14 @@ let random_string ~len =
 let fold_http_1_1 ~finally ~f acc body =
   let open Httpaf in
   let acc = ref acc in
-  let rec on_eof () = Body.close_reader body; finally !acc
+  let rec on_eof () = Body.Reader.close body; finally !acc
   and on_read bstr ~off ~len =
     let str = Bigstringaf.substring bstr ~off ~len in
     Logs.debug (fun m -> m "Feed the context");
     acc := f !acc str;
-    Body.schedule_read body ~on_eof ~on_read
+    Body.Reader.schedule_read body ~on_eof ~on_read
   in
-  Body.schedule_read body ~on_eof ~on_read
+  Body.Reader.schedule_read body ~on_eof ~on_read
 
 let fold_h2 ~finally ~f acc body =
   let open H2 in
@@ -398,11 +398,11 @@ let test04 =
         let resp = Response.create ~headers `OK in
         let body = Reqd.respond_with_streaming reqd resp in
         let rec go rest =
-          if rest <= 0 then Body.close_writer body
+          if rest <= 0 then Body.Writer.close body
           else
             let len = min chunk rest in
             let str = generate g1 len in
-            Body.write_string body str;
+            Body.Writer.write_string body str;
             go (rest - len)
         in
         go max

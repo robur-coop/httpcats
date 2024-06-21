@@ -186,7 +186,7 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
   | Process (V2, _, _) -> assert false
   | Process (V1, await, body) -> (
       let go orphans =
-        Option.iter (Httpaf.Body.write_string body) contents;
+        Option.iter (Httpaf.Body.Writer.write_string body) contents;
         Runtime.terminate orphans
       in
       Runtime.flat_tasks go;

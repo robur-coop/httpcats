@@ -96,7 +96,7 @@ let handler = function
           in
           let resp = Response.create ~headers `OK in
           let body = Reqd.request_body reqd in
-          Body.close_reader body;
+          Body.Reader.close body;
           Reqd.respond_with_string reqd resp index_html
       | _ ->
           let headers = Headers.of_list [ ("content-length", "0") ] in
