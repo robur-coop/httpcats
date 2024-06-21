@@ -3,5 +3,5 @@
  (public_name httpcats)
  (modules httpcats http_miou_unix http_miou_client http_miou_server flow
    runtime)
- (libraries hxd.string hxd.core ca-certs happy-eyeballs-miou-unix dns-client-miou-unix
-   httpaf h2 tls-miou-unix))
+ (libraries hxd.string hxd.core ca-certs happy-eyeballs-miou-unix
+   dns-client-miou-unix httpaf h2 tls-miou-unix))

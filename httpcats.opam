@@ -32,7 +32,7 @@ build: [
 
 synopsis: "A simple HTTP client using http/af, h2, and miou"
 pin-depends: [
-  [ "miou.dev" "git+https://git.robur.coop/robur/miou.git#ed5087b832797616df073bd8ec9baed2ec4e474c" ]
+  [ "miou.dev" "git+https://github.com/robur-coop/miou.git#ed5087b832797616df073bd8ec9baed2ec4e474c" ]
   [ "mirage-crypto.0.11.3" "git+https://github.com/dinosaure/mirage-crypto.git#c0e29117be2d081b50a5f1a789b16c77585324a3" ]
   [ "mirage-crypto-rng.0.11.3" "git+https://github.com/dinosaure/mirage-crypto.git#c0e29117be2d081b50a5f1a789b16c77585324a3" ]
   [ "alcotest.1.7.0" "git+https://github.com/dinosaure/alcotest.git#d591896a54ff4f652ac2d7d7194de1e0fb6e3aca" ]

@@ -56,8 +56,8 @@ let request_from_h2 { H2.Request.meth; target; scheme; headers } =
 
 let default_error_handler ?request:_ _err _respond = ()
 
-let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
-    flow =
+let http_1_1_server_connection ?(config = Httpaf.Config.default)
+    ?(error_handler = default_error_handler) ~handler flow =
   let scheme = "http" in
   let read_buffer_size = config.Httpaf.Config.read_buffer_size in
   let error_handler ?request err respond =
@@ -71,21 +71,19 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
       let body = respond hdrs in
       `V1 body
     in
-    user's_error_handler ?request err respond;
+    error_handler ?request err respond;
     Runtime.terminate orphans
   in
   let request_handler reqd =
-    Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`V1 reqd);
-    Runtime.terminate orphans
+    Runtime.flat_tasks @@ fun orphans -> handler reqd; Runtime.terminate orphans
   in
   let conn =
     Httpaf.Server_connection.create ~config ~error_handler request_handler
   in
   Miou.await_exn (B.run conn ~read_buffer_size flow)
 
-let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
-    flow =
+let https_1_1_server_connection ?(config = Httpaf.Config.default)
+    ?(error_handler = default_error_handler) ~handler flow =
   let scheme = "https" in
   let read_buffer_size = config.Httpaf.Config.read_buffer_size in
   let error_handler ?request err respond =
@@ -99,20 +97,19 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
       let body = respond hdrs in
       `V1 body
     in
-    user's_error_handler ?request err respond;
+    error_handler ?request err respond;
     Runtime.terminate orphans
   in
   let request_handler reqd =
-    Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`V1 reqd);
-    Runtime.terminate orphans
+    Runtime.flat_tasks @@ fun orphans -> handler reqd; Runtime.terminate orphans
   in
   let conn =
     Httpaf.Server_connection.create ~config ~error_handler request_handler
   in
   Miou.await_exn (A.run conn ~read_buffer_size flow)
 
-let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
+let h2s_server_connection ?(config = H2.Config.default)
+    ?(error_handler = default_error_handler) ~handler flow =
   let read_buffer_size = config.H2.Config.read_buffer_size in
   let error_handler ?request err respond =
     let request = Option.map request_from_h2 request in
@@ -121,13 +118,11 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
     in
     Runtime.flat_tasks @@ fun orphans ->
     let respond hdrs = `V2 (respond hdrs) in
-    user's_error_handler ?request err respond;
+    error_handler ?request err respond;
     Runtime.terminate orphans
   in
   let request_handler reqd =
-    Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`V2 reqd);
-    Runtime.terminate orphans
+    Runtime.flat_tasks @@ fun orphans -> handler reqd; Runtime.terminate orphans
   in
   let conn =
     H2.Server_connection.create ~config ~error_handler request_handler
@@ -184,9 +179,7 @@ let pp_sockaddr ppf = function
   | Unix.ADDR_INET (inet_addr, port) ->
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
-let clear ?stop ?(config = Httpaf.Config.default) ?backlog
-    ?error_handler:(user's_error_handler = default_error_handler)
-    ~handler:user's_handler sockaddr =
+let clear ?stop ?config ?backlog ?error_handler ~handler sockaddr =
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
     | None ->
@@ -199,8 +192,7 @@ let clear ?stop ?(config = Httpaf.Config.default) ?backlog
         clean_up orphans;
         let _ =
           Miou.call ~orphans @@ fun () ->
-          http_1_1_server_connection ~config ~user's_error_handler
-            ~user's_handler fd'
+          http_1_1_server_connection ?config ?error_handler ~handler fd'
         in
         go orphans file_descr
   in
@@ -225,8 +217,8 @@ let alpn tls =
   | None -> None
 
 let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
-    ?backlog ?error_handler:(user's_error_handler = default_error_handler)
-    tls_config ~handler:user's_handler sockaddr =
+    ?backlog ?error_handler tls_config ~handler:(user's_handler : handler)
+    sockaddr =
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
     | None -> Runtime.terminate orphans; Miou_unix.close file_descr
@@ -239,12 +231,14 @@ let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
             begin
               match (config, alpn tls_flow) with
               | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-                  h2s_server_connection ~config:h2 ~user's_error_handler
-                    ~user's_handler tls_flow
+                  let handler reqd = user's_handler (`V2 reqd) in
+                  h2s_server_connection ~config:h2 ?error_handler ~handler
+                    tls_flow
               | `Both (httpaf, _), Some "http/1.1"
               | `HTTP_1_1 httpaf, (Some "http/1.1" | None) ->
-                  https_1_1_server_connection ~config:httpaf
-                    ~user's_error_handler ~user's_handler tls_flow
+                  let handler reqd = user's_handler (`V1 reqd) in
+                  https_1_1_server_connection ~config:httpaf ?error_handler
+                    ~handler tls_flow
               | `Both _, None -> assert false
               | _, Some _protocol -> assert false
             end

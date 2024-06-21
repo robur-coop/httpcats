@@ -118,20 +118,18 @@ let secure_server ~seed ?(port = 8080) handler =
 let test00 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let handler = function
-    | `V2 _ -> assert false
-    | `V1 reqd ->
-        let open Httpaf in
-        let body = "Hello World!" in
-        let headers =
-          Headers.of_list
-            [
-              ("content-type", "text/plain")
-            ; ("content-length", string_of_int (String.length body))
-            ]
-        in
-        let resp = Response.create ~headers `OK in
-        Reqd.respond_with_string reqd resp body
+  let handler reqd =
+    let open Httpaf in
+    let body = "Hello World!" in
+    let headers =
+      Headers.of_list
+        [
+          ("content-type", "text/plain")
+        ; ("content-length", string_of_int (String.length body))
+        ]
+    in
+    let resp = Response.create ~headers `OK in
+    Reqd.respond_with_string reqd resp body
   in
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.make () in
@@ -166,29 +164,26 @@ let test01 =
   let g1 = Random.State.copy g0 in
   let max = 0x100000 in
   let chunk = 0x10 in
-  let handler = function
-    | `V2 _ -> assert false
-    | `V1 reqd ->
-        Logs.debug (fun m -> m "Got a request");
-        let open Httpaf in
-        let headers =
-          Headers.of_list
-            [
-              ("content-type", "text/plain")
-            ; ("content-length", string_of_int max)
-            ]
-        in
-        let resp = Response.create ~headers `OK in
-        let body = Reqd.respond_with_streaming reqd resp in
-        let rec go rest =
-          if rest <= 0 then Body.close_writer body
-          else
-            let len = min chunk rest in
-            let str = generate g0 len in
-            Body.write_string body str;
-            go (rest - len)
-        in
-        go max
+  let handler reqd =
+    Logs.debug (fun m -> m "Got a request");
+    let open Httpaf in
+    let headers =
+      Headers.of_list
+        [
+          ("content-type", "text/plain"); ("content-length", string_of_int max)
+        ]
+    in
+    let resp = Response.create ~headers `OK in
+    let body = Reqd.respond_with_streaming reqd resp in
+    let rec go rest =
+      if rest <= 0 then Body.close_writer body
+      else
+        let len = min chunk rest in
+        let str = generate g0 len in
+        Body.write_string body str;
+        go (rest - len)
+    in
+    go max
   in
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.make () in
@@ -244,24 +239,22 @@ let fold_h2 ~finally ~f acc body =
 let test02 =
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let handler = function
-    | `V2 _ -> assert false
-    | `V1 reqd ->
-        let open Httpaf in
-        let f ctx str = Digestif.SHA1.feed_string ctx str in
-        let finally ctx =
-          let hash = Digestif.SHA1.(to_hex (get ctx)) in
-          let headers =
-            Headers.of_list
-              [
-                ("content-type", "text/plain")
-              ; ("content-length", string_of_int (String.length hash))
-              ]
-          in
-          let resp = Response.create ~headers `OK in
-          Reqd.respond_with_string reqd resp hash
-        in
-        fold_http_1_1 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
+  let handler reqd =
+    let open Httpaf in
+    let f ctx str = Digestif.SHA1.feed_string ctx str in
+    let finally ctx =
+      let hash = Digestif.SHA1.(to_hex (get ctx)) in
+      let headers =
+        Headers.of_list
+          [
+            ("content-type", "text/plain")
+          ; ("content-length", string_of_int (String.length hash))
+          ]
+      in
+      let resp = Response.create ~headers `OK in
+      Reqd.respond_with_string reqd resp hash
+    in
+    fold_http_1_1 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
   in
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.make () in

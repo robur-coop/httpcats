@@ -253,7 +253,8 @@ let () =
     (`Udp, [ `Plaintext (Ipaddr.of_string_exn "8.8.8.8", 53) ])
   in
   let dns = Dns_client_miou_unix.create ~nameservers resolver in
-  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
+  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns)
+    resolver;
   let t = make ~resolver ~filenames in
   let prm = Miou.call_cc (run t uris) in
   let result = Miou.await prm in
