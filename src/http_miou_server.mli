@@ -19,7 +19,7 @@ type request = {
 }
 
 type response = { status: Status.t; headers: Headers.t }
-type body = [ `V1 of [ `write ] Httpaf.Body.t | `V2 of H2.Body.Writer.t ]
+type body = [ `V1 of Httpaf.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of Httpaf.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
 type handler = reqd -> unit

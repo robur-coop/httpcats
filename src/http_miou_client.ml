@@ -42,7 +42,7 @@ let pp_error ppf = function
   | `Protocol msg -> Fmt.string ppf msg
 
 type ('resp, 'body) version =
-  | V1 : (Httpaf.Response.t, [ `write ] Httpaf.Body.t) version
+  | V1 : (Httpaf.Response.t, Httpaf.Body.Writer.t) version
   | V2 : (H2.Response.t, H2.Body.Writer.t) version
 
 type 'resp await = unit -> ('resp, error) result
@@ -56,14 +56,14 @@ let http_1_1_response_handler ~f acc =
   let acc = ref acc in
   let response = ref None in
   let go resp body orphans =
-    let rec on_eof () = Httpaf.Body.close_reader body
+    let rec on_eof () = Httpaf.Body.Reader.close body
     and on_read bstr ~off ~len =
       let str = Bigstringaf.substring bstr ~off ~len in
       acc := f (`V1 resp) !acc str;
-      Httpaf.Body.schedule_read body ~on_read ~on_eof
+      Httpaf.Body.Reader.schedule_read body ~on_read ~on_eof
     in
     response := Some (`V1 resp);
-    Httpaf.Body.schedule_read body ~on_read ~on_eof;
+    Httpaf.Body.Reader.schedule_read body ~on_read ~on_eof;
     Runtime.terminate orphans
   in
   let response_handler resp body = Runtime.flat_tasks (go resp body) in

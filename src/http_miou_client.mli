@@ -11,7 +11,7 @@ type error =
 val pp_error : error Fmt.t
 
 type ('resp, 'body) version =
-  | V1 : (Httpaf.Response.t, [ `write ] Httpaf.Body.t) version
+  | V1 : (Httpaf.Response.t, Httpaf.Body.Writer.t) version
   | V2 : (H2.Response.t, H2.Body.Writer.t) version
 
 type 'resp await = unit -> ('resp, error) result
