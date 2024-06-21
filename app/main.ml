@@ -49,8 +49,11 @@ let unicast_censurfridns_dk =
 let () =
   Miou_unix.run @@ fun () ->
   let daemon, resolver = Happy_eyeballs_miou_unix.make () in
-  let dns = Dns_client_miou_unix.create ~nameservers:(`Udp, [ google ]) resolver in
-  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
+  let dns =
+    Dns_client_miou_unix.create ~nameservers:(`Udp, [ google ]) resolver
+  in
+  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns)
+    resolver;
   let f _resp buf str = Buffer.add_string buf str; buf in
   match
     Httpcats.request ~resolver ~f ~uri:Sys.argv.(1) (Buffer.create 0x100)

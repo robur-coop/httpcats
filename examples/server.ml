@@ -80,28 +80,26 @@ let rec cleanup orphans =
   | None | Some None -> ()
   | Some (Some prm) -> Miou.await_exn prm; cleanup orphans
 
-let handler = function
-  | `V2 _ -> assert false
-  | `V1 reqd -> (
-      let open Httpaf in
-      let request = Reqd.request reqd in
-      match request.Request.target with
-      | "" | "/" | "/index.html" ->
-          let headers =
-            Headers.of_list
-              [
-                ("content-type", "text/html; charset=utf-8")
-              ; ("content-length", string_of_int (String.length index_html))
-              ]
-          in
-          let resp = Response.create ~headers `OK in
-          let body = Reqd.request_body reqd in
-          Body.close_reader body;
-          Reqd.respond_with_string reqd resp index_html
-      | _ ->
-          let headers = Headers.of_list [ ("content-length", "0") ] in
-          let resp = Response.create ~headers `Not_found in
-          Reqd.respond_with_string reqd resp "")
+let handler reqd =
+  let open Httpaf in
+  let request = Reqd.request reqd in
+  match request.Request.target with
+  | "" | "/" | "/index.html" ->
+      let headers =
+        Headers.of_list
+          [
+            ("content-type", "text/html; charset=utf-8")
+          ; ("content-length", string_of_int (String.length index_html))
+          ]
+      in
+      let resp = Response.create ~headers `OK in
+      let body = Reqd.request_body reqd in
+      Body.close_reader body;
+      Reqd.respond_with_string reqd resp index_html
+  | _ ->
+      let headers = Headers.of_list [ ("content-length", "0") ] in
+      let resp = Response.create ~headers `Not_found in
+      Reqd.respond_with_string reqd resp ""
 
 let server sockaddr = Httpcats.Server.clear ~handler sockaddr
 let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
