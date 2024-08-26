@@ -6,5 +6,12 @@
 (test
  (name test)
  (modules test)
- (libraries mirage-crypto-rng.unix rresult logs.fmt fmt.tty logs.threaded
-   digestif httpcats alcotest))
+ (libraries
+  mirage-crypto-rng.unix
+  rresult
+  logs.fmt
+  fmt.tty
+  logs.threaded
+  digestif
+  httpcats
+  alcotest))

@@ -21,6 +21,7 @@ depends: [
   "mirage-crypto-rng-miou-unix" {with-test}
   "alcotest" {>= "1.8.0" & with-test}
   "digestif" {with-test}
+  "progress" {with-test}
 ]
 conflicts: [ "result" {< "1.5"} ]
 build: [

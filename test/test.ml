@@ -214,7 +214,7 @@ let random_string ~len =
   done;
   Bytes.unsafe_to_string res
 
-let random_string_seq ?(chunk= 0x100) ~g ~len =
+let random_string_seq ?(chunk = 0x100) ~g ~len =
   let tmp = Bytes.create chunk in
   let snd = ref 0 in
   let dispenser () =
@@ -225,7 +225,9 @@ let random_string_seq ?(chunk= 0x100) ~g ~len =
         Bytes.set tmp i (Char.unsafe_chr (Random.State.bits g land 0xff))
       done;
       snd := !snd + len;
-      Some (Bytes.sub_string tmp 0 len) end in
+      Some (Bytes.sub_string tmp 0 len)
+    end
+  in
   Seq.of_dispenser dispenser
 
 let fold_http_1_1 ~finally ~f acc body =
@@ -277,7 +279,9 @@ let test02 =
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let g0 = Random.State.make_self_init () in
-  let body = Httpcats.stream (random_string_seq ~g:(Random.State.copy g0) ~len:0x4000) in
+  let body =
+    Httpcats.stream (random_string_seq ~g:(Random.State.copy g0) ~len:0x4000)
+  in
   match
     Httpcats.request ~resolver ~meth:`POST ~body
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
@@ -285,8 +289,10 @@ let test02 =
   with
   | Ok (_response, buf) ->
       let hash' = Digestif.SHA1.of_hex (Buffer.contents buf) in
-      let hash = Digestif.SHA1.digesti_string
-        ((Fun.flip Seq.iter) (random_string_seq ~g:g0 ~len:0x4000)) in
+      let hash =
+        Digestif.SHA1.digesti_string
+          ((Fun.flip Seq.iter) (random_string_seq ~g:g0 ~len:0x4000))
+      in
       Alcotest.(check sha1) "sha1" hash hash';
       Httpcats.Server.switch stop;
       Miou.await_exn prm;
@@ -511,14 +517,16 @@ let test05 =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.request ~resolver ~tls_config ~meth:`POST ~body:(Httpcats.string body)
+    Httpcats.request ~resolver ~tls_config ~meth:`POST
+      ~body:(Httpcats.string body)
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
     Miou.async @@ fun () ->
-    Httpcats.request ~resolver ~authenticator ~meth:`POST ~body:(Httpcats.string body)
+    Httpcats.request ~resolver ~authenticator ~meth:`POST
+      ~body:(Httpcats.string body)
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)

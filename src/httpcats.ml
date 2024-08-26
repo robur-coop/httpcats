@@ -82,24 +82,23 @@ let add_authentication ?(meth = `Basic) ~add headers user_pass =
 
 let user_agent = "hurl/%%VERSION_NUM%%"
 
-type body =
-  | String of string
-  | Stream of string Seq.t
+type body = String of string | Stream of string Seq.t
 
 let prep_http_1_1_headers headers host user_pass body =
   let headers = H1.Headers.of_list headers in
   let add = H1.Headers.add_unless_exists in
   let headers = add headers "user-agent" user_agent in
   let headers = add headers "host" host in
-  let headers = match body with
+  let headers =
+    match body with
     | Some (Some len) ->
         let headers = add headers "connection" "close" in
         add headers "content-length" (string_of_int len)
-    | Some None ->
-        add headers "transfer-encoding" "chunked"
+    | Some None -> add headers "transfer-encoding" "chunked"
     | None ->
         let headers = add headers "connection" "close" in
-        add headers "content-length" "0" in 
+        add headers "content-length" "0"
+  in
   add_authentication ~add headers user_pass
 
 let prep_h2_headers headers (host : string) user_pass blen =
@@ -183,10 +182,12 @@ let from_h2 response =
 
 let single_http_1_1_request ?(config = H1.Config.default) flow user_pass host
     meth path headers contents f acc =
-  let contents_length = match contents with
+  let contents_length =
+    match contents with
     | Some (String str) -> Some (Some (String.length str))
     | Some (Stream _) -> Some None
-    | None -> None in
+    | None -> None
+  in
   let headers = prep_http_1_1_headers headers host user_pass contents_length in
   let request = H1.Request.create ~headers meth path in
   let f response acc str =
@@ -197,16 +198,17 @@ let single_http_1_1_request ?(config = H1.Config.default) flow user_pass host
   | Process (V2, _, _) -> assert false
   | Process (V1, await, body) -> (
       let go orphans =
-        let seq = match contents with
+        let seq =
+          match contents with
           | Some (String str) -> Seq.return str
           | Some (Stream seq) -> seq
-          | None -> Seq.empty in
+          | None -> Seq.empty
+        in
         let send str =
           Log.debug (fun m -> m "write %S\n%!" str);
-          H1.Body.Writer.write_string body str in
-        Seq.iter send seq;
-        H1.Body.Writer.close body;
-        Runtime.terminate orphans
+          H1.Body.Writer.write_string body str
+        in
+        Seq.iter send seq; H1.Body.Writer.close body; Runtime.terminate orphans
       in
       Runtime.flat_tasks go;
       let finally () =
@@ -221,9 +223,11 @@ let single_http_1_1_request ?(config = H1.Config.default) flow user_pass host
 
 let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
     meth path headers contents f acc =
-  let contents_length = match contents with
-    | Some (String str) -> Some (String.length str) 
-    | _ -> None in
+  let contents_length =
+    match contents with
+    | Some (String str) -> Some (String.length str)
+    | _ -> None
+  in
   let headers = prep_h2_headers headers host user_pass contents_length in
   let request = H2.Request.create ~scheme ~headers meth path in
   let first = ref false in
@@ -238,14 +242,14 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
   | Process (V1, _, _) -> assert false
   | Process (V2, await, body) -> (
       let go orphans =
-        let seq = match contents with
+        let seq =
+          match contents with
           | Some (String str) -> Seq.return str
           | Some (Stream seq) -> seq
-          | None -> Seq.empty in
+          | None -> Seq.empty
+        in
         let send str = H2.Body.Writer.write_string body str in
-        Seq.iter send seq;
-        H2.Body.Writer.close body;
-        Runtime.terminate orphans
+        Seq.iter send seq; H2.Body.Writer.close body; Runtime.terminate orphans
       in
       Runtime.flat_tasks go;
       match await () with

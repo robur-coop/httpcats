@@ -1,3 +1,30 @@
 (executable
  (name server)
+ (optional true)
  (libraries fmt.tty logs.fmt logs.threaded httpcats))
+
+(executable
+ (name client)
+ (modules client)
+ (optional true)
+ (libraries
+  logs.threaded
+  logs.fmt
+  fmt.tty
+  hxd.string
+  hxd.core
+  mirage-crypto-rng-miou-unix
+  httpcats))
+
+(executable
+ (name pars)
+ (modules pars)
+ (optional true)
+ (libraries
+  duration
+  fmt.tty
+  logs.fmt
+  logs.threaded
+  mirage-crypto-rng-miou-unix
+  httpcats
+  progress))

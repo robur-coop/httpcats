@@ -46,7 +46,7 @@ val pp_response : response Fmt.t
 type body =
   | String of string
   | Stream of string Seq.t
-(** A body, consisting to a basic string or a stream ([string Seq.t]). The
+      (** A body, consisting to a basic string or a stream ([string Seq.t]). The
     last implies a {{:https://en.wikipedia.org/wiki/Chunked_transfer_encoding}“Chunked”}
     transmission if not specified in the headers. *)
 

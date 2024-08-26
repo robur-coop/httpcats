@@ -10,3 +10,4 @@ field-space=tight
 if-then-else=compact
 break-sequences=false
 sequence-blank-line=compact
+exp-grouping=preserve

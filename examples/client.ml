@@ -25,7 +25,6 @@ let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
 let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
-let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
 
 let getaddrinfo dns record host =
   let ( let* ) = Result.bind in
@@ -52,6 +51,7 @@ let unicast_censurfridns_dk =
 
 let () =
   Miou_unix.run @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let dns =
     Dns_client_miou_unix.create ~nameservers:(`Udp, [ google ]) resolver
@@ -63,10 +63,12 @@ let () =
   with
   | Ok (_, body) ->
       Happy_eyeballs_miou_unix.kill daemon;
+      Mirage_crypto_rng_miou_unix.kill rng;
       Format.printf "@[<hov>%a@]\n%!"
         (Hxd_string.pp Hxd.default)
         (Buffer.contents body)
   | Error err ->
       Happy_eyeballs_miou_unix.kill daemon;
+      Mirage_crypto_rng_miou_unix.kill rng;
       Format.eprintf "%a\n%!" Httpcats.pp_error err;
       exit 1
