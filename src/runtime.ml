@@ -46,10 +46,6 @@ end = struct
     end
 
   let get t ~f =
-    Log.debug (fun m ->
-        m "<- @[<hov>%a@]"
-          (Hxd_string.pp Hxd.default)
-          (Bigstringaf.substring t.buffer ~off:t.off ~len:t.len));
     let n = f t.buffer ~off:t.off ~len:t.len in
     t.off <- t.off + n;
     t.len <- t.len - n;

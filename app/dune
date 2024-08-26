@@ -1,11 +1,13 @@
 (executable
  (name main)
  (modules main)
+ (optional)
  (libraries logs.threaded logs.fmt fmt.tty mirage-crypto-rng.unix hxd.string
    hxd.core httpcats))
 
 (executable
  (name pars)
  (modules pars)
+ (optional)
  (libraries duration fmt.tty logs.fmt logs.threaded
    mirage-crypto-rng-miou-unix httpcats progress))

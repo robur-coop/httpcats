@@ -11,17 +11,14 @@ depends: [
   "dune" {>= "2.0.0"}
   "logs"
   "miou"
-  "httpaf" {>= "0.7.0"}
-  "tls" {>= "0.17.0"}
   "fmt"
   "h2" {>= "0.10.0"}
   "h1"
-  "hxd"
   "ca-certs"
-  "happy-eyeballs"
-  "progress"
+  "tls-miou-unix"
   "dns-client-miou-unix"
   "happy-eyeballs-miou-unix"
+  "mirage-crypto-rng-miou-unix" {with-test}
   "alcotest" {>= "1.8.0" & with-test}
   "digestif" {with-test}
 ]
