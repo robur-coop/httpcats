@@ -28,3 +28,7 @@
   mirage-crypto-rng-miou-unix
   httpcats
   progress))
+
+(alias
+ (name runtest)
+ (deps (glob_files *.exe)))
