@@ -33,5 +33,7 @@ build: [
 
 synopsis: "A simple HTTP client using http/af, h2, and miou"
 pin-depends: [
-  [ "dns-client-miou-unix.8.0.0" "git+https://github.com/dinosaure/ocaml-dns.git#8d97f0d3668b88139e7294c165f2e88a0b289982" ]
+  [ "dns-client-miou-unix.9.0.0" "git+https://github.com/dinosaure/ocaml-dns.git#8d97f0d3668b88139e7294c165f2e88a0b289982" ]
+  [ "dns-client.9.0.0" "git+https://github.com/dinosaure/ocaml-dns.git#8d97f0d3668b88139e7294c165f2e88a0b289982" ]
+  [ "dns.9.0.0" "git+https://github.com/dinosaure/ocaml-dns.git#8d97f0d3668b88139e7294c165f2e88a0b289982" ]
 ]
