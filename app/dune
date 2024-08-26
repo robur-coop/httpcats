@@ -7,5 +7,5 @@
 (executable
  (name pars)
  (modules pars)
- (libraries duration fmt.tty logs.fmt logs.threaded mirage-crypto-rng.unix
-   httpcats progress))
+ (libraries duration fmt.tty logs.fmt logs.threaded
+   mirage-crypto-rng-miou-unix httpcats progress))

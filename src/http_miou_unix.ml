@@ -17,7 +17,7 @@ module TCP = struct
     try match cmd with
       | `read -> Unix.shutdown (Miou_unix.to_file_descr flow) Unix.SHUTDOWN_RECEIVE
       | `write -> Unix.shutdown (Miou_unix.to_file_descr flow) Unix.SHUTDOWN_SEND
-      | `read_write -> Unix.close (Miou_unix.to_file_descr  flow)
+      | `read_write -> Unix.close (Miou_unix.to_file_descr flow)
     with Unix.Unix_error (Unix.ENOTCONN, _, _) -> ()
   [@@ocamlformat "disable"]
 end

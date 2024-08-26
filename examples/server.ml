@@ -83,7 +83,7 @@ let rec cleanup orphans =
 let handler = function
   | `V2 _ -> assert false
   | `V1 reqd -> (
-      let open Httpaf in
+      let open H1 in
       let request = Reqd.request reqd in
       match request.Request.target with
       | "" | "/" | "/index.html" ->
@@ -96,7 +96,7 @@ let handler = function
           in
           let resp = Response.create ~headers `OK in
           let body = Reqd.request_body reqd in
-          Body.close_reader body;
+          Body.Reader.close body;
           Reqd.respond_with_string reqd resp index_html
       | _ ->
           let headers = Headers.of_list [ ("content-length", "0") ] in
@@ -111,7 +111,7 @@ let () =
   let () = Printexc.record_backtrace true in
   Miou_unix.run @@ fun () ->
   let domains = Miou.Domain.available () in
-  let prm = Miou.call_cc @@ fun () -> server addr in
+  let prm = Miou.async @@ fun () -> server addr in
   Miou.parallel server (List.init domains (Fun.const addr))
   |> List.iter (function Ok () -> () | Error exn -> raise exn);
   Miou.await_exn prm

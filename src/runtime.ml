@@ -5,13 +5,17 @@ module Log = (val Logs.src_log src : Logs.LOG)
 module type S = sig
   type t
 
-  val next_read_operation : t -> [ `Read | `Yield | `Close ]
+  val next_read_operation : t -> [ `Read | `Yield | `Close | `Upgrade ]
   val read : t -> Bigstringaf.t -> off:int -> len:int -> int
   val read_eof : t -> Bigstringaf.t -> off:int -> len:int -> int
   val yield_reader : t -> (unit -> unit) -> unit
 
   val next_write_operation :
-    t -> [ `Write of Bigstringaf.t Faraday.iovec list | `Close of int | `Yield ]
+       t
+    -> [ `Write of Bigstringaf.t Faraday.iovec list
+       | `Close of int
+       | `Yield
+       | `Upgrade ]
 
   val report_write_result : t -> [ `Ok of int | `Closed ] -> unit
   val yield_writer : t -> (unit -> unit) -> unit
@@ -93,7 +97,7 @@ let flat_tasks fn =
     | Spawn fn ->
         Log.debug (fun m -> m "spawn a new task");
         let _ =
-          Miou.call_cc ~orphans @@ fun () ->
+          Miou.async ~orphans @@ fun () ->
           Log.debug (fun m -> m "function spawned");
           try fn ()
           with exn ->
@@ -158,6 +162,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             Runtime.yield_reader conn k;
             Log.debug (fun m -> m "yield the reader");
             terminate orphans
+        | `Upgrade -> assert false
         | `Close ->
             Log.debug (fun m -> m "shutdown the reader");
             Flow.shutdown flow `read;
@@ -195,6 +200,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             Log.debug (fun m -> m "shutdown the writer");
             Flow.shutdown flow `write;
             terminate orphans
+        | `Upgrade -> assert false
       in
       try flat_tasks go
       with exn ->
@@ -205,8 +211,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
         in
         flat_tasks go
     in
-    Miou.call_cc @@ fun () ->
-    let p0 = Miou.call_cc reader and p1 = Miou.call_cc writer in
+    Miou.async @@ fun () ->
+    let p0 = Miou.async reader and p1 = Miou.async writer in
     match Miou.await_all [ p0; p1 ] with
     | [ Ok (); Ok () ] -> Log.debug (fun m -> m "reader / writer terminates")
     | [ Error exn; _ ] | [ _; Error exn ] ->

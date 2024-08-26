@@ -1,17 +1,36 @@
 open Http_miou_unix
-module A = Runtime.Make (Tls_miou_unix) (Httpaf.Server_connection)
+module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
 
-module TCP_and_httpaf = struct
+module TCP_and_H1 = struct
   include TCP
 
+  (* NOTE(dinosaure): an early [shutdown `read] is not really appreciated by
+     http/1.1 servers. We do nothing in this case. However, we do make sure that
+     as soon as the process has finished, we close the socket.
+
+     See [http_1_1_server_connection] for the [Unix.close]. *)
   let shutdown flow = function `read -> () | value -> shutdown flow value
 end
 
-module B = Runtime.Make (TCP_and_httpaf) (Httpaf.Server_connection)
-module C = Runtime.Make (Tls_miou_unix) (H2.Server_connection)
+module H2_Server_connection = struct
+  include H2.Server_connection
+
+  let next_read_operation t =
+    (next_read_operation t :> [ `Close | `Read | `Yield | `Upgrade ])
+
+  let next_write_operation t =
+    (next_write_operation t
+      :> [ `Close of int
+         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Yield
+         | `Upgrade ])
+end
+
+module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
+module C = Runtime.Make (Tls_miou_unix) (H2_Server_connection)
 
 type error =
-  [ `V1 of Httpaf.Server_connection.error
+  [ `V1 of H1.Server_connection.error
   | `V2 of H2.Server_connection.error
   | `Protocol of string ]
 
@@ -42,13 +61,13 @@ type request = {
 }
 
 type response = { status: Status.t; headers: Headers.t }
-type body = [ `V1 of [ `write ] Httpaf.Body.t | `V2 of H2.Body.Writer.t ]
-type reqd = [ `V1 of Httpaf.Reqd.t | `V2 of H2.Reqd.t ]
+type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
+type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
 type handler = reqd -> unit
 
-let request_from_httpaf ~scheme { Httpaf.Request.meth; target; headers; _ } =
-  let headers = Headers.of_list (Httpaf.Headers.to_list headers) in
+let request_from_H1 ~scheme { H1.Request.meth; target; headers; _ } =
+  let headers = Headers.of_list (H1.Headers.to_list headers) in
   { meth; target; scheme; headers }
 
 let request_from_h2 { H2.Request.meth; target; scheme; headers } =
@@ -59,15 +78,15 @@ let default_error_handler ?request:_ _err _respond = ()
 let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     flow =
   let scheme = "http" in
-  let read_buffer_size = config.Httpaf.Config.read_buffer_size in
+  let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
-    let request = Option.map (request_from_httpaf ~scheme) request in
+    let request = Option.map (request_from_H1 ~scheme) request in
     let err =
       match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
     in
     Runtime.flat_tasks @@ fun orphans ->
     let respond hdrs =
-      let hdrs = Httpaf.Headers.of_list (Headers.to_list hdrs) in
+      let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
       let body = respond hdrs in
       `V1 body
     in
@@ -80,22 +99,27 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     Runtime.terminate orphans
   in
   let conn =
-    Httpaf.Server_connection.create ~config ~error_handler request_handler
+    H1.Server_connection.create ~config ~error_handler request_handler
   in
+  (* NOTE(dinosaure): see the module [TCP_and_H1] and the fake shutdown. We must
+     finalize the process with [Miou_unix.close flow]. At the end, the flow is
+     only shutdown on the write side. *)
+  let finally () = Miou_unix.close flow in
+  Fun.protect ~finally @@ fun () ->
   Miou.await_exn (B.run conn ~read_buffer_size flow)
 
 let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     flow =
   let scheme = "https" in
-  let read_buffer_size = config.Httpaf.Config.read_buffer_size in
+  let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
-    let request = Option.map (request_from_httpaf ~scheme) request in
+    let request = Option.map (request_from_H1 ~scheme) request in
     let err =
       match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
     in
     Runtime.flat_tasks @@ fun orphans ->
     let respond hdrs =
-      let hdrs = Httpaf.Headers.of_list (Headers.to_list hdrs) in
+      let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
       let body = respond hdrs in
       `V1 body
     in
@@ -108,7 +132,7 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     Runtime.terminate orphans
   in
   let conn =
-    Httpaf.Server_connection.create ~config ~error_handler request_handler
+    H1.Server_connection.create ~config ~error_handler request_handler
   in
   Miou.await_exn (A.run conn ~read_buffer_size flow)
 
@@ -168,8 +192,8 @@ let accept_or_stop ?stop file_descr =
   match stop with
   | None -> Some (Miou_unix.accept file_descr)
   | Some stop -> (
-      let accept = Miou.call_cc @@ fun () -> Miou_unix.accept file_descr in
-      let wait = Miou.call_cc (wait stop) in
+      let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
+      let wait = Miou.async (wait stop) in
       Log.debug (fun m -> m "waiting for a client");
       match Miou.await_first [ accept; wait ] with
       | Ok (fd, sockaddr) -> Some (fd, sockaddr)
@@ -184,7 +208,7 @@ let pp_sockaddr ppf = function
   | Unix.ADDR_INET (inet_addr, port) ->
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
-let clear ?stop ?(config = Httpaf.Config.default) ?backlog
+let clear ?stop ?(config = H1.Config.default) ?backlog
     ?error_handler:(user's_error_handler = default_error_handler)
     ~handler:user's_handler sockaddr =
   let rec go orphans file_descr =
@@ -224,7 +248,7 @@ let alpn tls =
       protocol
   | None -> None
 
-let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
+let with_tls ?stop ?(config = `Both (H1.Config.default, H2.Config.default))
     ?backlog ?error_handler:(user's_error_handler = default_error_handler)
     tls_config ~handler:user's_handler sockaddr =
   let rec go orphans file_descr =
@@ -239,12 +263,14 @@ let with_tls ?stop ?(config = `Both (Httpaf.Config.default, H2.Config.default))
             begin
               match (config, alpn tls_flow) with
               | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
+                  Log.debug (fun m -> m "Start a h2 request handler");
                   h2s_server_connection ~config:h2 ~user's_error_handler
                     ~user's_handler tls_flow
-              | `Both (httpaf, _), Some "http/1.1"
-              | `HTTP_1_1 httpaf, (Some "http/1.1" | None) ->
-                  https_1_1_server_connection ~config:httpaf
-                    ~user's_error_handler ~user's_handler tls_flow
+              | `Both (config, _), Some "http/1.1"
+              | `HTTP_1_1 config, (Some "http/1.1" | None) ->
+                  Log.debug (fun m -> m "Start a http/1.1 request handler");
+                  https_1_1_server_connection ~config ~user's_error_handler
+                    ~user's_handler tls_flow
               | `Both _, None -> assert false
               | _, Some _protocol -> assert false
             end

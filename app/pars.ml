@@ -110,7 +110,7 @@ type t = {
   ; reporters: reporter array
   ; display: display
   ; align: int
-  ; resolver: Happy_eyeballs_miou_unix.happy
+  ; resolver: Happy_eyeballs_miou_unix.t
 }
 
 let make ~resolver ~filenames =
@@ -218,19 +218,23 @@ let get_uris_from_stdin () =
   in
   go []
 
-let getaddrinfo dns =
-  {
-    Happy_eyeballs_miou_unix.getaddrinfo=
-      (fun record host -> Dns_client_miou_unix.getaddrinfo dns record host)
-  }
+let getaddrinfo dns record host =
+  let ( let* ) = Result.bind in
+  match record with
+  | `A ->
+      let* ipaddr = Dns_client_miou_unix.gethostbyname dns host in
+      Ok Ipaddr.Set.(singleton (V4 ipaddr))
+  | `AAAA ->
+      let* ipaddr = Dns_client_miou_unix.gethostbyname6 dns host in
+      Ok Ipaddr.Set.(singleton (V6 ipaddr))
 
 let sigpipe = 13
 let () = Sys.set_signal sigpipe Sys.Signal_ignore
 let () = Printexc.record_backtrace true
-let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
 
 let () =
   Miou_unix.run @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let uris = get_uris_from_stdin () in
   let uris =
     List.filter_map
@@ -248,14 +252,15 @@ let () =
       uris
   in
   Logs.debug (fun m -> m "Got %d uri(s)" (List.length uris));
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let nameservers =
     (`Udp, [ `Plaintext (Ipaddr.of_string_exn "8.8.8.8", 53) ])
   in
   let dns = Dns_client_miou_unix.create ~nameservers resolver in
-  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
+  Happy_eyeballs_miou_unix.inject resolver (getaddrinfo dns);
   let t = make ~resolver ~filenames in
-  let prm = Miou.call_cc (run t uris) in
+  let prm = Miou.async (run t uris) in
   let result = Miou.await prm in
   Happy_eyeballs_miou_unix.kill daemon;
+  Mirage_crypto_rng_miou_unix.kill rng;
   match result with Ok () -> () | Error exn -> raise exn

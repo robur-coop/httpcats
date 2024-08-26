@@ -20,7 +20,8 @@ let reporter ppf =
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
-let () = Logs.set_level ~all:true (Some Logs.Debug)
+
+(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 let domains = 3
@@ -49,17 +50,19 @@ module Ca = struct
         ])
 
   let cacert_lifetime = Ptime.Span.v (365, 0L)
-  let cacert_serial_number = Z.one
+  let _10s = Ptime.Span.of_int_s 10
 
   let make domain_name seed =
     Domain_name.of_string domain_name >>= Domain_name.host
     >>= fun domain_name ->
     let private_key =
-      let seed = Cstruct.of_string (Base64.decode_exn ~pad:false seed) in
+      let seed = Base64.decode_exn ~pad:false seed in
       let g = Mirage_crypto_rng.(create ~seed (module Fortuna)) in
       Mirage_crypto_pk.Rsa.generate ~g ~bits:2048 ()
     in
-    let valid_from = Ptime.v (Ptime_clock.now_d_ps ()) in
+    let valid_from =
+      Option.get Ptime.(sub_span (v (Ptime_clock.now_d_ps ())) _10s)
+    in
     Ptime.add_span valid_from cacert_lifetime
     |> Option.to_result ~none:(R.msgf "End time out of range")
     >>= fun valid_until ->
@@ -68,11 +71,6 @@ module Ca = struct
       let open X509.Extension in
       let key_id =
         X509.Public_key.id X509.Signing_request.((info ca_csr).public_key)
-      in
-      let authority_key_id =
-        ( Some key_id
-        , X509.General_name.(singleton Directory [ cacert_dn ])
-        , Some cacert_serial_number )
       in
       empty
       |> add Subject_alt_name
@@ -83,17 +81,15 @@ module Ca = struct
       |> add Key_usage
            (true, [ `Digital_signature; `Content_commitment; `Key_encipherment ])
       |> add Subject_key_id (false, key_id)
-      |> add Authority_key_id (false, authority_key_id)
     in
-    X509.Signing_request.sign ~valid_from ~valid_until ~extensions
-      ~serial:cacert_serial_number ca_csr (`RSA private_key) cacert_dn
+    X509.Signing_request.sign ~valid_from ~valid_until ~extensions ca_csr
+      (`RSA private_key) cacert_dn
     |> R.reword_error (R.msgf "%a" X509.Validation.pp_signature_error)
     >>= fun certificate ->
     let fingerprint = X509.Certificate.fingerprint `SHA256 certificate in
     let time () = Some (Ptime_clock.now ()) in
     let authenticator =
-      X509.Authenticator.server_cert_fingerprint ~time ~hash:`SHA256
-        ~fingerprint
+      X509.Authenticator.cert_fingerprint ~time ~hash:`SHA256 ~fingerprint
     in
     Ok (certificate, `RSA private_key, authenticator)
 end
@@ -104,12 +100,13 @@ let secure_server ~seed ?(port = 8080) handler =
     Rresult.R.failwith_error_msg (Ca.make "http.cats" seed)
   in
   let prm =
-    Miou.call_cc @@ fun () ->
+    Miou.async @@ fun () ->
     let sockaddr = Unix.ADDR_INET (Unix.inet_addr_loopback, port) in
     let cfg =
       Tls.Config.server
         ~certificates:(`Single ([ cert ], pk))
         ~alpn_protocols:[ "h2"; "http/1.1" ] ()
+      |> Result.get_ok
     in
     Httpcats.Server.with_tls ~stop cfg ~handler sockaddr
   in
@@ -121,7 +118,7 @@ let test00 =
   let handler = function
     | `V2 _ -> assert false
     | `V1 reqd ->
-        let open Httpaf in
+        let open H1 in
         let body = "Hello World!" in
         let headers =
           Headers.of_list
@@ -134,7 +131,7 @@ let test00 =
         Reqd.respond_with_string reqd resp body
   in
   let stop, prm = server ~port:4000 handler in
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
@@ -170,7 +167,7 @@ let test01 =
     | `V2 _ -> assert false
     | `V1 reqd ->
         Logs.debug (fun m -> m "Got a request");
-        let open Httpaf in
+        let open H1 in
         let headers =
           Headers.of_list
             [
@@ -181,17 +178,17 @@ let test01 =
         let resp = Response.create ~headers `OK in
         let body = Reqd.respond_with_streaming reqd resp in
         let rec go rest =
-          if rest <= 0 then Body.close_writer body
+          if rest <= 0 then Body.Writer.close body
           else
             let len = min chunk rest in
             let str = generate g0 len in
-            Body.write_string body str;
+            Body.Writer.write_string body str;
             go (rest - len)
         in
         go max
   in
   let stop, prm = server ~port:4000 handler in
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
@@ -217,17 +214,31 @@ let random_string ~len =
   done;
   Bytes.unsafe_to_string res
 
+let random_string_seq ?(chunk= 0x100) ~g ~len =
+  let tmp = Bytes.create chunk in
+  let snd = ref 0 in
+  let dispenser () =
+    let len = min (len - !snd) (Bytes.length tmp) in
+    if len = 0 then None
+    else begin
+      for i = 0 to len - 1 do
+        Bytes.set tmp i (Char.unsafe_chr (Random.State.bits g land 0xff))
+      done;
+      snd := !snd + len;
+      Some (Bytes.sub_string tmp 0 len) end in
+  Seq.of_dispenser dispenser
+
 let fold_http_1_1 ~finally ~f acc body =
-  let open Httpaf in
+  let open H1 in
   let acc = ref acc in
-  let rec on_eof () = Body.close_reader body; finally !acc
+  let rec on_eof () = Body.Reader.close body; finally !acc
   and on_read bstr ~off ~len =
     let str = Bigstringaf.substring bstr ~off ~len in
     Logs.debug (fun m -> m "Feed the context");
     acc := f !acc str;
-    Body.schedule_read body ~on_eof ~on_read
+    Body.Reader.schedule_read body ~on_eof ~on_read
   in
-  Body.schedule_read body ~on_eof ~on_read
+  Body.Reader.schedule_read body ~on_eof ~on_read
 
 let fold_h2 ~finally ~f acc body =
   let open H2 in
@@ -247,7 +258,7 @@ let test02 =
   let handler = function
     | `V2 _ -> assert false
     | `V1 reqd ->
-        let open Httpaf in
+        let open H1 in
         let f ctx str = Digestif.SHA1.feed_string ctx str in
         let finally ctx =
           let hash = Digestif.SHA1.(to_hex (get ctx)) in
@@ -264,8 +275,9 @@ let test02 =
         fold_http_1_1 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
   in
   let stop, prm = server ~port:4000 handler in
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
-  let body = random_string ~len:0x4000 in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
+  let g0 = Random.State.make_self_init () in
+  let body = Httpcats.stream (random_string_seq ~g:(Random.State.copy g0) ~len:0x4000) in
   match
     Httpcats.request ~resolver ~meth:`POST ~body
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
@@ -273,7 +285,8 @@ let test02 =
   with
   | Ok (_response, buf) ->
       let hash' = Digestif.SHA1.of_hex (Buffer.contents buf) in
-      let hash = Digestif.SHA1.digest_string body in
+      let hash = Digestif.SHA1.digesti_string
+        ((Fun.flip Seq.iter) (random_string_seq ~g:g0 ~len:0x4000)) in
       Alcotest.(check sha1) "sha1" hash hash';
       Httpcats.Server.switch stop;
       Miou.await_exn prm;
@@ -305,7 +318,7 @@ let test03 =
         let resp = Response.create ~headers `OK in
         Reqd.respond_with_string reqd resp body
     | `V1 reqd ->
-        let open Httpaf in
+        let open H1 in
         let body = "Hello World!" in
         let headers =
           Headers.of_list
@@ -318,11 +331,12 @@ let test03 =
         Reqd.respond_with_string reqd resp body
   in
   let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let http_1_1 =
-    Miou.call_cc @@ fun () ->
+    Miou.async @@ fun () ->
     let tls_config =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
+      |> Result.get_ok
     in
     Httpcats.request ~resolver ~tls_config
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
@@ -330,7 +344,7 @@ let test03 =
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
-    Miou.call_cc @@ fun () ->
+    Miou.async @@ fun () ->
     Httpcats.request ~resolver ~authenticator
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
@@ -387,7 +401,7 @@ let test04 =
         go max
     | `V1 reqd ->
         Logs.debug (fun m -> m "Got a request");
-        let open Httpaf in
+        let open H1 in
         let headers =
           Headers.of_list
             [
@@ -398,21 +412,22 @@ let test04 =
         let resp = Response.create ~headers `OK in
         let body = Reqd.respond_with_streaming reqd resp in
         let rec go rest =
-          if rest <= 0 then Body.close_writer body
+          if rest <= 0 then Body.Writer.close body
           else
             let len = min chunk rest in
             let str = generate g1 len in
-            Body.write_string body str;
+            Body.Writer.write_string body str;
             go (rest - len)
         in
         go max
   in
   let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let http_1_1 =
-    Miou.call_cc @@ fun () ->
+    Miou.async @@ fun () ->
     let tls_config =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
+      |> Result.get_ok
     in
     Httpcats.request ~resolver ~tls_config
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
@@ -420,7 +435,7 @@ let test04 =
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
-    Miou.call_cc @@ fun () ->
+    Miou.async @@ fun () ->
     Httpcats.request ~resolver ~authenticator
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
@@ -471,7 +486,7 @@ let test05 =
         in
         fold_h2 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
     | `V1 reqd ->
-        let open Httpaf in
+        let open H1 in
         let f ctx str = Digestif.SHA1.feed_string ctx str in
         let finally ctx =
           let hash = Digestif.SHA1.(to_hex (get ctx)) in
@@ -488,21 +503,22 @@ let test05 =
         fold_http_1_1 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
   in
   let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let body = random_string ~len:0x4000 in
   let http_1_1 =
-    Miou.call_cc @@ fun () ->
+    Miou.async @@ fun () ->
     let tls_config =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
+      |> Result.get_ok
     in
-    Httpcats.request ~resolver ~tls_config ~meth:`POST ~body
+    Httpcats.request ~resolver ~tls_config ~meth:`POST ~body:(Httpcats.string body)
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
-    Miou.call_cc @@ fun () ->
-    Httpcats.request ~resolver ~authenticator ~meth:`POST ~body
+    Miou.async @@ fun () ->
+    Httpcats.request ~resolver ~authenticator ~meth:`POST ~body:(Httpcats.string body)
       ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)

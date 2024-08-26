@@ -80,17 +80,26 @@ let add_authentication ?(meth = `Basic) ~add headers user_pass =
       let str = "Basic " ^ data in
       add headers "authorization" str
 
-let user_agent = "http-client/%%VERSION_NUM%%"
+let user_agent = "hurl/%%VERSION_NUM%%"
 
-let prep_http_1_1_headers headers host user_pass blen =
-  let headers = Httpaf.Headers.of_list headers in
-  let add = Httpaf.Headers.add_unless_exists in
+type body =
+  | String of string
+  | Stream of string Seq.t
+
+let prep_http_1_1_headers headers host user_pass body =
+  let headers = H1.Headers.of_list headers in
+  let add = H1.Headers.add_unless_exists in
   let headers = add headers "user-agent" user_agent in
   let headers = add headers "host" host in
-  let headers = add headers "connection" "close" in
-  let headers =
-    add headers "content-length" (string_of_int (Option.value ~default:0 blen))
-  in
+  let headers = match body with
+    | Some (Some len) ->
+        let headers = add headers "connection" "close" in
+        add headers "content-length" (string_of_int len)
+    | Some None ->
+        add headers "transfer-encoding" "chunked"
+    | None ->
+        let headers = add headers "connection" "close" in
+        add headers "content-length" "0" in 
   add_authentication ~add headers user_pass
 
 let prep_h2_headers headers (host : string) user_pass blen =
@@ -126,7 +135,7 @@ let prep_h2_headers headers (host : string) user_pass blen =
   in
   add_authentication ~add hdr user_pass
 
-module Version = Httpaf.Version
+module Version = H1.Version
 module Status = H2.Status
 module Headers = H2.Headers
 
@@ -146,7 +155,7 @@ let pp_response ppf resp =
     resp.reason Headers.pp_hum resp.headers
 
 type error =
-  [ `V1 of Httpaf.Client_connection.error
+  [ `V1 of H1.Client_connection.error
   | `V2 of H2.Client_connection.error
   | `Protocol of string
   | `Msg of string ]
@@ -155,14 +164,13 @@ let pp_error ppf = function
   | `Msg msg -> Fmt.string ppf msg
   | #Client.error as err -> Client.pp_error ppf err
 
-let from_httpaf response =
+let from_H1 response =
   {
-    version= response.Httpaf.Response.version
-  ; status= (response.Httpaf.Response.status :> H2.Status.t)
-  ; reason= response.Httpaf.Response.reason
+    version= response.H1.Response.version
+  ; status= (response.H1.Response.status :> H2.Status.t)
+  ; reason= response.H1.Response.reason
   ; headers=
-      H2.Headers.of_list
-        (Httpaf.Headers.to_list response.Httpaf.Response.headers)
+      H2.Headers.of_list (H1.Headers.to_list response.H1.Response.headers)
   }
 
 let from_h2 response =
@@ -173,20 +181,31 @@ let from_h2 response =
   ; headers= response.H2.Response.headers
   }
 
-let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
-    host meth path headers contents f acc =
-  let contents_length = Option.map String.length contents in
+let single_http_1_1_request ?(config = H1.Config.default) flow user_pass host
+    meth path headers contents f acc =
+  let contents_length = match contents with
+    | Some (String str) -> Some (Some (String.length str))
+    | Some (Stream _) -> Some None
+    | None -> None in
   let headers = prep_http_1_1_headers headers host user_pass contents_length in
-  let request = Httpaf.Request.create ~headers meth path in
+  let request = H1.Request.create ~headers meth path in
   let f response acc str =
     let[@warning "-8"] (`V1 response : Client.response) = response in
-    f (from_httpaf response) acc str
+    f (from_H1 response) acc str
   in
   match Client.run ~f acc (`V1 config) flow (`V1 request) with
   | Process (V2, _, _) -> assert false
   | Process (V1, await, body) -> (
       let go orphans =
-        Option.iter (Httpaf.Body.write_string body) contents;
+        let seq = match contents with
+          | Some (String str) -> Seq.return str
+          | Some (Stream seq) -> seq
+          | None -> Seq.empty in
+        let send str =
+          Log.debug (fun m -> m "write %S\n%!" str);
+          H1.Body.Writer.write_string body str in
+        Seq.iter send seq;
+        H1.Body.Writer.close body;
         Runtime.terminate orphans
       in
       Runtime.flat_tasks go;
@@ -197,12 +216,14 @@ let single_http_1_1_request ?(config = Httpaf.Config.default) flow user_pass
       in
       Fun.protect ~finally @@ fun () ->
       match await () with
-      | Ok (response, acc) -> Ok (from_httpaf response, acc)
+      | Ok (response, acc) -> Ok (from_H1 response, acc)
       | Error (#Client.error as err) -> Error (err :> error))
 
 let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
     meth path headers contents f acc =
-  let contents_length = Option.map String.length contents in
+  let contents_length = match contents with
+    | Some (String str) -> Some (String.length str) 
+    | _ -> None in
   let headers = prep_h2_headers headers host user_pass contents_length in
   let request = H2.Request.create ~scheme ~headers meth path in
   let first = ref false in
@@ -217,9 +238,13 @@ let single_h2_request ?(config = H2.Config.default) flow scheme user_pass host
   | Process (V1, _, _) -> assert false
   | Process (V2, await, body) -> (
       let go orphans =
-        Option.iter (H2.Body.Writer.write_string body) contents;
+        let seq = match contents with
+          | Some (String str) -> Seq.return str
+          | Some (Stream seq) -> seq
+          | None -> Seq.empty in
+        let send str = H2.Body.Writer.write_string body str in
+        Seq.iter send seq;
         H2.Body.Writer.close body;
-        Log.debug (fun m -> m "writer terminates");
         Runtime.terminate orphans
       in
       Runtime.flat_tasks go;
@@ -255,9 +280,9 @@ let connect_system ?port ?tls_config host =
         if Unix.is_inet6_addr h_addr_list.(0) then Miou_unix.tcpv6 ()
         else Miou_unix.tcpv4 ()
       in
-      let timeout = Miou.call_cc @@ fun () -> Miou_unix.sleep 5.0; `Timeout in
+      let timeout = Miou.async @@ fun () -> Miou_unix.sleep 5.0; `Timeout in
       let connect =
-        Miou.call_cc @@ fun () ->
+        Miou.async @@ fun () ->
         Miou_unix.connect socket addr;
         `Connected
       in
@@ -287,8 +312,7 @@ let connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host =
   in
   Log.debug (fun m -> m "try to connect to %s (with happy-eyeballs)" host);
   match
-    ( Happy_eyeballs_miou_unix.connect_endpoint happy_eyeballs host [ port ]
-    , tls_config )
+    (Happy_eyeballs_miou_unix.connect happy_eyeballs host [ port ], tls_config)
   with
   | Ok ((_ipaddr, _port), file_descr), None -> Ok (`Tcp file_descr)
   | Ok ((_ipaddr, _port), file_descr), Some tls_config ->
@@ -355,6 +379,9 @@ let resolve_location ~uri ~location =
     end
   | _ -> error_msgf "Unknown location (relative path): %S" location
 
+let string str = String str
+let stream seq = Stream seq
+
 let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
     ?body ?(max_redirect = 5) ?(follow_redirect = true) ?resolver:happy_eyeballs
     ~f ~uri acc =
@@ -374,7 +401,8 @@ let request ?config ?tls_config ?authenticator ?(meth = `GET) ?(headers = [])
         in
         Result.map
           (fun authenticator ->
-            `Default (Tls.Config.client ~alpn_protocols ~authenticator ()))
+            Tls.Config.client ~alpn_protocols ~authenticator () |> Result.get_ok
+            |> fun default -> `Default default)
           authenticator
   in
   let http_config =

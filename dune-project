@@ -1,4 +1,3 @@
-(lang dune 2.0)
+(lang dune 2.8)
 (name httpcats)
-
 (package (name httpcats))

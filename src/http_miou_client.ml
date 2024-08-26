@@ -3,27 +3,48 @@ let src = Logs.Src.create "http-miou-client"
 module Log = (val Logs.src_log src : Logs.LOG)
 open Http_miou_unix
 
-module Httpaf_Client_connection = struct
-  include Httpaf.Client_connection
+module H1_Client_connection = struct
+  include H1.Client_connection
 
   let yield_reader _ = assert false
 
   let next_read_operation t =
-    (next_read_operation t :> [ `Close | `Read | `Yield ])
+    (next_read_operation t :> [ `Close | `Read | `Yield | `Upgrade ])
+
+  let next_write_operation t =
+    (next_write_operation t
+      :> [ `Close of int
+         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Yield
+         | `Upgrade ])
 end
 
-module A = Runtime.Make (Tls_miou_unix) (Httpaf_Client_connection)
-module B = Runtime.Make (TCP) (Httpaf_Client_connection)
-module C = Runtime.Make (Tls_miou_unix) (H2.Client_connection)
-module D = Runtime.Make (TCP) (H2.Client_connection)
+module H2_Client_connection = struct
+  include H2.Client_connection
 
-type config = [ `V1 of Httpaf.Config.t | `V2 of H2.Config.t ]
+  let next_read_operation t =
+    (next_read_operation t :> [ `Close | `Read | `Yield | `Upgrade ])
+
+  let next_write_operation t =
+    (next_write_operation t
+      :> [ `Close of int
+         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Yield
+         | `Upgrade ])
+end
+
+module A = Runtime.Make (Tls_miou_unix) (H1_Client_connection)
+module B = Runtime.Make (TCP) (H1_Client_connection)
+module C = Runtime.Make (Tls_miou_unix) (H2_Client_connection)
+module D = Runtime.Make (TCP) (H2_Client_connection)
+
+type config = [ `V1 of H1.Config.t | `V2 of H2.Config.t ]
 type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
-type request = [ `V1 of Httpaf.Request.t | `V2 of H2.Request.t ]
-type response = [ `V1 of Httpaf.Response.t | `V2 of H2.Response.t ]
+type request = [ `V1 of H1.Request.t | `V2 of H2.Request.t ]
+type response = [ `V1 of H1.Response.t | `V2 of H2.Response.t ]
 
 type error =
-  [ `V1 of Httpaf.Client_connection.error
+  [ `V1 of H1.Client_connection.error
   | `V2 of H2.Client_connection.error
   | `Protocol of string ]
 
@@ -42,7 +63,7 @@ let pp_error ppf = function
   | `Protocol msg -> Fmt.string ppf msg
 
 type ('resp, 'body) version =
-  | V1 : (Httpaf.Response.t, [ `write ] Httpaf.Body.t) version
+  | V1 : (H1.Response.t, H1.Body.Writer.t) version
   | V2 : (H2.Response.t, H2.Body.Writer.t) version
 
 type 'resp await = unit -> ('resp, error) result
@@ -56,14 +77,14 @@ let http_1_1_response_handler ~f acc =
   let acc = ref acc in
   let response = ref None in
   let go resp body orphans =
-    let rec on_eof () = Httpaf.Body.close_reader body
+    let rec on_eof () = H1.Body.Reader.close body
     and on_read bstr ~off ~len =
       let str = Bigstringaf.substring bstr ~off ~len in
       acc := f (`V1 resp) !acc str;
-      Httpaf.Body.schedule_read body ~on_read ~on_eof
+      H1.Body.Reader.schedule_read body ~on_read ~on_eof
     in
     response := Some (`V1 resp);
-    Httpaf.Body.schedule_read body ~on_read ~on_eof;
+    H1.Body.Reader.schedule_read body ~on_read ~on_eof;
     Runtime.terminate orphans
   in
   let response_handler resp body = Runtime.flat_tasks (go resp body) in
@@ -116,11 +137,11 @@ let run ~f acc config flow request =
   Log.debug (fun m -> m "Start a new %a request" pp_request (flow, request));
   match (flow, config, request) with
   | `Tls flow, `V1 config, `V1 request ->
-      let read_buffer_size = config.Httpaf.Config.read_buffer_size in
+      let read_buffer_size = config.H1.Config.read_buffer_size in
       let response_handler, response, acc = http_1_1_response_handler ~f acc in
       let error_handler, error = http_1_1_error_handler () in
       let body, conn =
-        Httpaf.Client_connection.request ~config request ~error_handler
+        H1.Client_connection.request ~config request ~error_handler
           ~response_handler
       in
       let prm = A.run conn ~read_buffer_size flow in
@@ -133,11 +154,11 @@ let run ~f acc config flow request =
       in
       Process (V1, await, body)
   | `Tcp flow, `V1 config, `V1 request ->
-      let read_buffer_size = config.Httpaf.Config.read_buffer_size in
+      let read_buffer_size = config.H1.Config.read_buffer_size in
       let response_handler, response, acc = http_1_1_response_handler ~f acc in
       let error_handler, error = http_1_1_error_handler () in
       let body, conn =
-        Httpaf.Client_connection.request ~config request ~error_handler
+        H1.Client_connection.request ~config request ~error_handler
           ~response_handler
       in
       let prm = B.run conn ~read_buffer_size flow in

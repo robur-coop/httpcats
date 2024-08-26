@@ -27,11 +27,15 @@ let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna)
 
-let getaddrinfo dns =
-  {
-    Happy_eyeballs_miou_unix.getaddrinfo=
-      (fun record host -> Dns_client_miou_unix.getaddrinfo dns record host)
-  }
+let getaddrinfo dns record host =
+  let ( let* ) = Result.bind in
+  match record with
+  | `A ->
+      let* ipaddr = Dns_client_miou_unix.gethostbyname dns host in
+      Ok Ipaddr.Set.(singleton (V4 ipaddr))
+  | `AAAA ->
+      let* ipaddr = Dns_client_miou_unix.gethostbyname6 dns host in
+      Ok Ipaddr.Set.(singleton (V6 ipaddr))
 
 let google = `Plaintext (Ipaddr.of_string_exn "8.8.8.8", 53)
 
@@ -48,9 +52,11 @@ let unicast_censurfridns_dk =
 
 let () =
   Miou_unix.run @@ fun () ->
-  let daemon, resolver = Happy_eyeballs_miou_unix.make () in
-  let dns = Dns_client_miou_unix.create ~nameservers:(`Udp, [ google ]) resolver in
-  Happy_eyeballs_miou_unix.inject_resolver ~getaddrinfo:(getaddrinfo dns) resolver;
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
+  let dns =
+    Dns_client_miou_unix.create ~nameservers:(`Udp, [ google ]) resolver
+  in
+  Happy_eyeballs_miou_unix.inject resolver (getaddrinfo dns);
   let f _resp buf str = Buffer.add_string buf str; buf in
   match
     Httpcats.request ~resolver ~f ~uri:Sys.argv.(1) (Buffer.create 0x100)
