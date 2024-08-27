@@ -214,5 +214,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     | [ Error exn; _ ] | [ _; Error exn ] ->
         Log.err (fun m -> m "got an exception: %S" (Printexc.to_string exn));
         raise exn
-    | _ -> Log.err (fun m -> m "impossible")
+    | _ ->
+        Log.err (fun m -> m "impossible");
+        assert false
 end

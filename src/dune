@@ -9,6 +9,8 @@
   flow
   runtime)
  (libraries
+  hxd.core
+  hxd.string
   ca-certs
   happy-eyeballs-miou-unix
   dns-client-miou-unix

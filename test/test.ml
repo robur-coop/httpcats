@@ -134,7 +134,8 @@ let test00 =
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000/" (Buffer.create 0x10)
   with
   | Ok (_response, buf) ->
@@ -191,7 +192,8 @@ let test01 =
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
   with
   | Ok (_response, buf) ->
@@ -284,7 +286,8 @@ let test02 =
   in
   match
     Httpcats.request ~resolver ~meth:`POST ~body
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
   with
   | Ok (_response, buf) ->
@@ -345,14 +348,16 @@ let test03 =
       |> Result.get_ok
     in
     Httpcats.request ~resolver ~tls_config
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
     Miou.async @@ fun () ->
     Httpcats.request ~resolver ~authenticator
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
@@ -436,14 +441,16 @@ let test04 =
       |> Result.get_ok
     in
     Httpcats.request ~resolver ~tls_config
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
     Miou.async @@ fun () ->
     Httpcats.request ~resolver ~authenticator
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
@@ -519,7 +526,8 @@ let test05 =
     in
     Httpcats.request ~resolver ~tls_config ~meth:`POST
       ~body:(Httpcats.string body)
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
@@ -527,7 +535,8 @@ let test05 =
     Miou.async @@ fun () ->
     Httpcats.request ~resolver ~authenticator ~meth:`POST
       ~body:(Httpcats.string body)
-      ~f:(fun _resp buf str -> Buffer.add_string buf str; buf)
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in

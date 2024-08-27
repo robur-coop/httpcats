@@ -6,7 +6,8 @@ type response = [ `V1 of H1.Response.t | `V2 of H2.Response.t ]
 type error =
   [ `V1 of H1.Client_connection.error
   | `V2 of H2.Client_connection.error
-  | `Protocol of string ]
+  | `Protocol of string
+  | `Exn of exn ]
 
 val pp_error : error Fmt.t
 
@@ -14,11 +15,13 @@ type ('resp, 'body) version =
   | V1 : (H1.Response.t, H1.Body.Writer.t) version
   | V2 : (H2.Response.t, H2.Body.Writer.t) version
 
-type 'resp await = unit -> ('resp, error) result
+exception Error of error
+
+type 'acc await = unit -> ('acc, error) result
 
 type 'acc process =
   | Process :
-      ('resp, 'body) version * ('resp * 'acc) await * 'body
+      ('resp, 'body) version * 'acc await * 'resp Miou.Computation.t * 'body
       -> 'acc process
 
 val run :

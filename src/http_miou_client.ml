@@ -46,7 +46,8 @@ type response = [ `V1 of H1.Response.t | `V2 of H2.Response.t ]
 type error =
   [ `V1 of H1.Client_connection.error
   | `V2 of H2.Client_connection.error
-  | `Protocol of string ]
+  | `Protocol of string
+  | `Exn of exn ]
 
 let pp_error ppf = function
   | `V1 (`Malformed_response msg) ->
@@ -61,47 +62,50 @@ let pp_error ppf = function
   | `V2 (`Protocol_error (err, msg)) ->
       Fmt.pf ppf "Protocol error %a: %s" H2.Error_code.pp_hum err msg
   | `Protocol msg -> Fmt.string ppf msg
+  | `Exn exn -> Fmt.pf ppf "%S" (Printexc.to_string exn)
 
 type ('resp, 'body) version =
   | V1 : (H1.Response.t, H1.Body.Writer.t) version
   | V2 : (H2.Response.t, H2.Body.Writer.t) version
 
-type 'resp await = unit -> ('resp, error) result
+exception Error of error
+
+let empty = Printexc.get_callstack 0
+
+type 'acc await = unit -> ('acc, error) result
 
 type 'acc process =
   | Process :
-      ('resp, 'body) version * ('resp * 'acc) await * 'body
+      ('resp, 'body) version * 'acc await * 'resp Miou.Computation.t * 'body
       -> 'acc process
 
 let http_1_1_response_handler ~f acc =
   let acc = ref acc in
-  let response = ref None in
+  let response = Miou.Computation.create () in
   let go resp body orphans =
+    ignore (Miou.Computation.try_return response resp);
     let rec on_eof () = H1.Body.Reader.close body
     and on_read bstr ~off ~len =
       let str = Bigstringaf.substring bstr ~off ~len in
       acc := f (`V1 resp) !acc str;
       H1.Body.Reader.schedule_read body ~on_read ~on_eof
     in
-    response := Some (`V1 resp);
     H1.Body.Reader.schedule_read body ~on_read ~on_eof;
     Runtime.terminate orphans
   in
   let response_handler resp body = Runtime.flat_tasks (go resp body) in
   (response_handler, response, acc)
 
-let http_1_1_error_handler () =
-  let error = ref None in
-  let error_handler = function
-    | `Exn (Runtime.Flow msg) -> error := Some (`Protocol msg)
-    | err -> error := Some (`V1 err)
+let http_1_1_error_handler response err =
+  let err =
+    match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
   in
-  (error_handler, error)
+  ignore (Miou.Computation.try_cancel response (Error err, empty))
 
-let h2_response_handler conn ~f acc =
+let h2_response_handler conn ~f response acc =
   let acc = ref acc in
-  let response = ref None in
   let go resp body orphans =
+    ignore (Miou.Computation.try_return response resp);
     let rec on_eof () =
       H2.Body.Reader.close body;
       H2.Client_connection.shutdown conn
@@ -110,21 +114,17 @@ let h2_response_handler conn ~f acc =
       acc := f (`V2 resp) !acc str;
       H2.Body.Reader.schedule_read body ~on_read ~on_eof
     in
-    response := Some (`V1 resp);
     H2.Body.Reader.schedule_read body ~on_read ~on_eof;
-    Log.debug (fun m -> m "reader terminates");
     Runtime.terminate orphans
   in
   let response_handler resp body = Runtime.flat_tasks (go resp body) in
-  (response_handler, response, acc)
+  (response_handler, acc)
 
-let h2_error_handler () =
-  let error = ref None in
-  let error_handler = function
-    | `Exn (Runtime.Flow msg) -> error := Some (`Protocol msg)
-    | err -> error := Some (`V2 err)
+let h2_error_handler response err =
+  let err =
+    match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V2 err
   in
-  (error_handler, error)
+  ignore (Miou.Computation.try_cancel response (Error err, empty))
 
 let pp_request ppf (flow, request) =
   match (flow, request) with
@@ -133,77 +133,54 @@ let pp_request ppf (flow, request) =
   | `Tls _, `V2 _ -> Fmt.string ppf "h2 + tls"
   | `Tcp _, `V2 _ -> Fmt.string ppf "h2"
 
+let await_with acc prm () =
+  match Miou.await prm with Ok () -> Ok !acc | Error exn -> Error (`Exn exn)
+
 let run ~f acc config flow request =
   Log.debug (fun m -> m "Start a new %a request" pp_request (flow, request));
   match (flow, config, request) with
   | `Tls flow, `V1 config, `V1 request ->
       let read_buffer_size = config.H1.Config.read_buffer_size in
       let response_handler, response, acc = http_1_1_response_handler ~f acc in
-      let error_handler, error = http_1_1_error_handler () in
+      let error_handler = http_1_1_error_handler response in
       let body, conn =
         H1.Client_connection.request ~config request ~error_handler
           ~response_handler
       in
       let prm = A.run conn ~read_buffer_size flow in
-      let await () =
-        match (Miou.await prm, !error, !response) with
-        | _, Some error, _ -> Error error
-        | Error exn, _, _ -> Error (`V1 (`Exn exn))
-        | Ok (), None, Some (`V1 resp) -> Ok (resp, !acc)
-        | Ok (), None, (Some (`V2 _) | None) -> assert false
-      in
-      Process (V1, await, body)
+      Process (V1, await_with acc prm, response, body)
   | `Tcp flow, `V1 config, `V1 request ->
       let read_buffer_size = config.H1.Config.read_buffer_size in
       let response_handler, response, acc = http_1_1_response_handler ~f acc in
-      let error_handler, error = http_1_1_error_handler () in
+      let error_handler = http_1_1_error_handler response in
       let body, conn =
         H1.Client_connection.request ~config request ~error_handler
           ~response_handler
       in
       let prm = B.run conn ~read_buffer_size flow in
-      let await () =
-        match (Miou.await prm, !error, !response) with
-        | _, Some error, _ -> Error error
-        | Error exn, _, _ -> Error (`V1 (`Exn exn))
-        | Ok (), None, Some (`V1 resp) -> Ok (resp, !acc)
-        | Ok (), None, (Some (`V2 _) | None) -> assert false
-      in
-      Process (V1, await, body)
+      Process (V1, await_with acc prm, response, body)
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
-      let error_handler, error = h2_error_handler () in
+      let response = Miou.Computation.create () in
+      let error_handler = h2_error_handler response in
       let conn = H2.Client_connection.create ~config ~error_handler () in
-      let response_handler, response, acc = h2_response_handler conn ~f acc in
+      let response_handler, acc = h2_response_handler conn ~f response acc in
       let body =
         H2.Client_connection.request conn ~error_handler ~response_handler
           request
       in
       let prm = C.run conn ~read_buffer_size flow in
-      let await () =
-        match (Miou.await prm, !error, !response) with
-        | _, Some error, _ -> Error error
-        | Error exn, _, _ -> Error (`V1 (`Exn exn))
-        | Ok (), None, Some (`V1 resp) -> Ok (resp, !acc)
-        | Ok (), None, (Some (`V2 _) | None) -> assert false
-      in
-      Process (V2, await, body)
+      Process (V2, await_with acc prm, response, body)
   | `Tcp flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
-      let error_handler, error = h2_error_handler () in
+      let response = Miou.Computation.create () in
+      let error_handler = h2_error_handler response in
       let conn = H2.Client_connection.create ~config ~error_handler () in
-      let response_handler, response, acc = h2_response_handler conn ~f acc in
+      let response_handler, acc = h2_response_handler conn ~f response acc in
       let body =
         H2.Client_connection.request conn ~error_handler ~response_handler
           request
       in
       let prm = D.run conn ~read_buffer_size flow in
-      let await () =
-        match (Miou.await prm, !error, !response) with
-        | _, Some error, _ -> Error error
-        | Error exn, _, _ -> Error (`V1 (`Exn exn))
-        | Ok (), None, Some (`V1 resp) -> Ok (resp, !acc)
-        | Ok (), None, (Some (`V2 _) | None) -> assert false
-      in
-      Process (V2, await, body)
+      Process (V2, await_with acc prm, response, body)
   | _ -> invalid_arg "Http_miou_client.run"
