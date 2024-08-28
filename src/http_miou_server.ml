@@ -64,7 +64,9 @@ type response = { status: Status.t; headers: Headers.t }
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
-type handler = [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
+
+type handler =
+  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
 
 let request_from_H1 ~scheme { H1.Request.meth; target; headers; _ } =
   let headers = Headers.of_list (H1.Headers.to_list headers) in
@@ -212,9 +214,10 @@ let clear ?stop ?(config = H1.Config.default) ?backlog
     ?error_handler:(user's_error_handler = default_error_handler)
     ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
-  let call ~orphans fn = if domains >= 2
-    then ignore (Miou.call ~orphans fn)
-    else ignore (Miou.async ~orphans fn) in
+  let call ~orphans fn =
+    if domains >= 2 then ignore (Miou.call ~orphans fn)
+    else ignore (Miou.async ~orphans fn)
+  in
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
     | None ->
@@ -225,10 +228,12 @@ let clear ?stop ?(config = H1.Config.default) ?backlog
         Log.debug (fun m ->
             m "receive a connection from: %a" pp_sockaddr sockaddr);
         clean_up orphans;
-        call ~orphans begin fun () ->
-          http_1_1_server_connection ~config ~user's_error_handler
-            ~user's_handler fd'
-        end;
+        call ~orphans
+          begin
+            fun () ->
+              http_1_1_server_connection ~config ~user's_error_handler
+                ~user's_handler fd'
+          end;
         go orphans file_descr
   in
   let socket =
@@ -255,37 +260,40 @@ let with_tls ?stop ?(config = `Both (H1.Config.default, H2.Config.default))
     ?backlog ?error_handler:(user's_error_handler = default_error_handler)
     tls_config ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
-  let call ~orphans fn = if domains >= 2
-    then ignore (Miou.call ~orphans fn)
-    else ignore (Miou.async ~orphans fn) in
+  let call ~orphans fn =
+    if domains >= 2 then ignore (Miou.call ~orphans fn)
+    else ignore (Miou.async ~orphans fn)
+  in
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
     | None -> Runtime.terminate orphans; Miou_unix.close file_descr
     | Some (fd', _sockaddr) ->
         clean_up orphans;
-        call ~orphans begin fun () ->
-          try
-            let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
-            begin
-              match (config, alpn tls_flow) with
-              | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-                  Log.debug (fun m -> m "Start a h2 request handler");
-                  h2s_server_connection ~config:h2 ~user's_error_handler
-                    ~user's_handler tls_flow
-              | `Both (config, _), Some "http/1.1"
-              | `HTTP_1_1 config, (Some "http/1.1" | None) ->
-                  Log.debug (fun m -> m "Start a http/1.1 request handler");
-                  https_1_1_server_connection ~config ~user's_error_handler
-                    ~user's_handler tls_flow
-              | `Both _, None -> assert false
-              | _, Some _protocol -> assert false
-            end
-          with exn ->
-            Log.err (fun m ->
-                m "got a TLS error during the handshake: %s"
-                  (Printexc.to_string exn));
-            Miou_unix.close fd'
-        end;
+        call ~orphans
+          begin
+            fun () ->
+              try
+                let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
+                begin
+                  match (config, alpn tls_flow) with
+                  | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
+                      Log.debug (fun m -> m "Start a h2 request handler");
+                      h2s_server_connection ~config:h2 ~user's_error_handler
+                        ~user's_handler tls_flow
+                  | `Both (config, _), Some "http/1.1"
+                  | `HTTP_1_1 config, (Some "http/1.1" | None) ->
+                      Log.debug (fun m -> m "Start a http/1.1 request handler");
+                      https_1_1_server_connection ~config ~user's_error_handler
+                        ~user's_handler tls_flow
+                  | `Both _, None -> assert false
+                  | _, Some _protocol -> assert false
+                end
+              with exn ->
+                Log.err (fun m ->
+                    m "got a TLS error during the handshake: %s"
+                      (Printexc.to_string exn));
+                Miou_unix.close fd'
+          end;
         go orphans file_descr
   in
   let socket =

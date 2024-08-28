@@ -86,14 +86,17 @@ let sockaddr_of_arguments () =
 
 let resp =
   let open H1 in
-  let headers = Headers.of_list
-    [
-      ("content-type", "text/plain; charset=utf-8")
-    ; ("content-length", string_of_int (String.length text))
-    ] in
+  let headers =
+    Headers.of_list
+      [
+        ("content-type", "text/plain; charset=utf-8")
+      ; ("content-length", string_of_int (String.length text))
+      ]
+  in
   Response.create ~headers `OK
 
-let[@warning "-8"] handler _ (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
+let[@warning "-8"] handler _
+    (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
   let open H1 in
   let request = Reqd.request reqd in
   match request.Request.target with
@@ -115,7 +118,7 @@ let () =
   Miou_unix.run @@ fun () ->
   let domains = Miou.Domain.available () in
   let prm = Miou.async @@ fun () -> server addr in
-  if domains > 0
-  then Miou.parallel server (List.init domains (Fun.const addr))
-       |> List.iter (function Ok () -> () | Error exn -> raise exn);
+  if domains > 0 then
+    Miou.parallel server (List.init domains (Fun.const addr))
+    |> List.iter (function Ok () -> () | Error exn -> raise exn);
   Miou.await_exn prm

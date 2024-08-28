@@ -22,7 +22,9 @@ type response = { status: Status.t; headers: Headers.t }
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
-type handler = [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
+
+type handler =
+  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
 
 val clear :
      ?stop:stop
