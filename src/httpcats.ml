@@ -10,6 +10,7 @@ module Status = H2.Status
 module Headers = H2.Headers
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
+let open_error_msg = function Ok _ as v -> v | Error (`Msg _) as v -> v
 
 let decode_host_port str =
   match String.split_on_char ':' str with
@@ -313,6 +314,18 @@ let alpn_protocol = function
       | Some { Tls.Core.alpn_protocol= Some _; _ } -> None
       | None -> None)
 
+type socket =
+  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ]
+  * Ipaddr.t
+  * int
+  * Tls.Core.epoch_data option
+
+type resolver =
+     ?port:int
+  -> ?tls_config:Tls.Config.client
+  -> string
+  -> (socket, [ `Msg of string ]) result
+
 let connect_system ?port ?tls_config host =
   let port =
     match (port, tls_config) with
@@ -377,7 +390,8 @@ let connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host =
   | (Error _ as err), _ -> err
 
 type config_for_a_request = {
-    happy_eyeballs: Happy_eyeballs_miou_unix.t option
+    resolver:
+      [ `Happy of Happy_eyeballs_miou_unix.t | `User of resolver | `System ]
   ; http_config: [ `HTTP_1_1 of H1.Config.t | `H2 of H2.Config.t ] option
   ; tls_config: (tls_config, error) result
   ; meth: H2.Method.t
@@ -407,10 +421,12 @@ let single_request cfg ~f acc =
   in
   Log.debug (fun m -> m "connect to %s (connected)" cfg.uri);
   let* flow, ipaddr, port, epoch =
-    match cfg.happy_eyeballs with
-    | Some happy_eyeballs ->
+    match cfg.resolver with
+    | `Happy happy_eyeballs ->
         connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host
-    | None -> connect_system ?port ?tls_config host
+        |> open_error_msg
+    | `User connect -> connect ?port ?tls_config host |> open_error_msg
+    | `System -> connect_system ?port ?tls_config host |> open_error_msg
   in
   Log.debug (fun m -> m "single request to %s (connected)" cfg.uri);
   let cfg' =
@@ -456,7 +472,7 @@ let memoize = function
 
 let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?resolver:happy_eyeballs ~f ~uri acc =
+    ?(resolver = `System) ~f ~uri acc =
   let tls_config =
     match tls_config with
     | Some cfg -> Ok (`Custom cfg)
@@ -482,7 +498,7 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
   in
   let cfg =
     {
-      happy_eyeballs
+      resolver
     ; http_config
     ; tls_config
     ; meth

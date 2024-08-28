@@ -64,7 +64,7 @@ type response = { status: Status.t; headers: Headers.t }
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
-type handler = reqd -> unit
+type handler = [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
 
 let request_from_H1 ~scheme { H1.Request.meth; target; headers; _ } =
   let headers = Headers.of_list (H1.Headers.to_list headers) in
@@ -95,7 +95,7 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
   in
   let request_handler reqd =
     Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`V1 reqd);
+    user's_handler (`Tcp flow) (`V1 reqd);
     Runtime.terminate orphans
   in
   let conn =
@@ -128,7 +128,7 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
   in
   let request_handler reqd =
     Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`V1 reqd);
+    user's_handler (`Tls flow) (`V1 reqd);
     Runtime.terminate orphans
   in
   let conn =
@@ -150,7 +150,7 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
   in
   let request_handler reqd =
     Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`V2 reqd);
+    user's_handler (`Tls flow) (`V2 reqd);
     Runtime.terminate orphans
   in
   let conn =
@@ -211,6 +211,10 @@ let pp_sockaddr ppf = function
 let clear ?stop ?(config = H1.Config.default) ?backlog
     ?error_handler:(user's_error_handler = default_error_handler)
     ~handler:user's_handler sockaddr =
+  let domains = Miou.Domain.available () in
+  let call ~orphans fn = if domains >= 2
+    then ignore (Miou.call ~orphans fn)
+    else ignore (Miou.async ~orphans fn) in
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
     | None ->
@@ -221,11 +225,10 @@ let clear ?stop ?(config = H1.Config.default) ?backlog
         Log.debug (fun m ->
             m "receive a connection from: %a" pp_sockaddr sockaddr);
         clean_up orphans;
-        let _ =
-          Miou.call ~orphans @@ fun () ->
+        call ~orphans begin fun () ->
           http_1_1_server_connection ~config ~user's_error_handler
             ~user's_handler fd'
-        in
+        end;
         go orphans file_descr
   in
   let socket =
@@ -251,13 +254,16 @@ let alpn tls =
 let with_tls ?stop ?(config = `Both (H1.Config.default, H2.Config.default))
     ?backlog ?error_handler:(user's_error_handler = default_error_handler)
     tls_config ~handler:user's_handler sockaddr =
+  let domains = Miou.Domain.available () in
+  let call ~orphans fn = if domains >= 2
+    then ignore (Miou.call ~orphans fn)
+    else ignore (Miou.async ~orphans fn) in
   let rec go orphans file_descr =
     match accept_or_stop ?stop file_descr with
     | None -> Runtime.terminate orphans; Miou_unix.close file_descr
     | Some (fd', _sockaddr) ->
         clean_up orphans;
-        let _ =
-          Miou.call ~orphans @@ fun () ->
+        call ~orphans begin fun () ->
           try
             let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
             begin
@@ -279,7 +285,7 @@ let with_tls ?stop ?(config = `Both (H1.Config.default, H2.Config.default))
                 m "got a TLS error during the handshake: %s"
                   (Printexc.to_string exn));
             Miou_unix.close fd'
-        in
+        end;
         go orphans file_descr
   in
   let socket =

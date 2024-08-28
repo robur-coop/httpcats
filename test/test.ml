@@ -115,7 +115,7 @@ let secure_server ~seed ?(port = 8080) handler =
 let test00 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let handler = function
+  let handler _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
         let open H1 in
@@ -133,7 +133,7 @@ let test00 =
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
-    Httpcats.request ~resolver
+    Httpcats.request ~resolver:(`Happy resolver)
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000/" (Buffer.create 0x10)
@@ -164,7 +164,7 @@ let test01 =
   let g1 = Random.State.copy g0 in
   let max = 0x100000 in
   let chunk = 0x10 in
-  let handler = function
+  let handler _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
         Logs.debug (fun m -> m "Got a request");
@@ -191,7 +191,7 @@ let test01 =
   let stop, prm = server ~port:4000 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
-    Httpcats.request ~resolver
+    Httpcats.request ~resolver:(`Happy resolver)
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
@@ -259,7 +259,7 @@ let fold_h2 ~finally ~f acc body =
 let test02 =
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let handler = function
+  let handler _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
         let open H1 in
@@ -285,7 +285,7 @@ let test02 =
     Httpcats.stream (random_string_seq ~g:(Random.State.copy g0) ~len:0x4000)
   in
   match
-    Httpcats.request ~resolver ~meth:`POST ~body
+    Httpcats.request ~resolver:(`Happy resolver) ~meth:`POST ~body
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
@@ -313,7 +313,7 @@ let test03 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   let open Rresult in
   Miou_unix.run ~domains @@ fun () ->
-  let handler = function
+  let handler _ = function
     | `V2 reqd ->
         let open H2 in
         let body = "Hello World!" in
@@ -347,7 +347,7 @@ let test03 =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.request ~resolver ~tls_config
+    Httpcats.request ~resolver:(`Happy resolver) ~tls_config
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
@@ -355,7 +355,7 @@ let test03 =
   in
   let h2 =
     Miou.async @@ fun () ->
-    Httpcats.request ~resolver ~authenticator
+    Httpcats.request ~resolver:(`Happy resolver) ~authenticator
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
@@ -389,7 +389,7 @@ let test04 =
   let g2 = Random.State.copy g0 in
   let max = 0x100000 in
   let chunk = 0x10 in
-  let handler = function
+  let handler _ = function
     | `V2 reqd ->
         let open H2 in
         let headers =
@@ -440,7 +440,7 @@ let test04 =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.request ~resolver ~tls_config
+    Httpcats.request ~resolver:(`Happy resolver) ~tls_config
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
@@ -448,7 +448,7 @@ let test04 =
   in
   let h2 =
     Miou.async @@ fun () ->
-    Httpcats.request ~resolver ~authenticator
+    Httpcats.request ~resolver:(`Happy resolver) ~authenticator
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
@@ -481,7 +481,7 @@ let test05 =
   let open Rresult in
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let handler = function
+  let handler _ = function
     | `V2 reqd ->
         let open H2 in
         let f ctx str = Digestif.SHA1.feed_string ctx str in
@@ -524,7 +524,7 @@ let test05 =
       Tls.Config.client ~authenticator ~alpn_protocols:[ "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.request ~resolver ~tls_config ~meth:`POST
+    Httpcats.request ~resolver:(`Happy resolver) ~tls_config ~meth:`POST
       ~body:(Httpcats.string body)
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
@@ -533,7 +533,7 @@ let test05 =
   in
   let h2 =
     Miou.async @@ fun () ->
-    Httpcats.request ~resolver ~authenticator ~meth:`POST
+    Httpcats.request ~resolver:(`Happy resolver) ~authenticator ~meth:`POST
       ~body:(Httpcats.string body)
       ~f:(fun _ _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)

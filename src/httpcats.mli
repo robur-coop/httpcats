@@ -67,6 +67,18 @@ type 'a handler = meta -> response -> 'a -> string option -> 'a
         | None -> buf
     ]} *)
 
+type socket =
+  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ]
+  * Ipaddr.t
+  * int
+  * Tls.Core.epoch_data option
+
+type resolver =
+     ?port:int
+  -> ?tls_config:Tls.Config.client
+  -> string
+  -> (socket, [ `Msg of string ]) result
+
 val string : string -> body
 val stream : string Seq.t -> body
 
@@ -79,7 +91,8 @@ val request :
   -> ?body:body
   -> ?max_redirect:int
   -> ?follow_redirect:bool
-  -> ?resolver:Happy_eyeballs_miou_unix.t
+  -> ?resolver:
+       [ `Happy of Happy_eyeballs_miou_unix.t | `User of resolver | `System ]
   -> f:'a handler
   -> uri:string
   -> 'a
