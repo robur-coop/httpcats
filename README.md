@@ -167,3 +167,5 @@ implementation!
 [io_uring]: https://github.com/ocaml-multicore/ocaml-uring
 [nginx-benchmark]: https://openbenchmarking.org/test/pts/nginx&eval=f9e860ca197d88a133e3ae0496e96fa3c79e33fe#metrics
 [cohttp]: https://github.com/mirage/ocaml-cohttp
+[rewrk]: https://github.com/lnx-search/rewrk
+[mirage-crypto]: https://github.com/mirage/mirage-crypto
