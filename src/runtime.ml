@@ -158,7 +158,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             Runtime.yield_reader conn k;
             Log.debug (fun m -> m "yield the reader");
             terminate orphans
-        | `Upgrade -> assert false
+        | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
         | `Close ->
             Log.debug (fun m -> m "shutdown the reader");
             Flow.shutdown flow `read;
@@ -196,7 +196,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             Log.debug (fun m -> m "shutdown the writer");
             Flow.shutdown flow `write;
             terminate orphans
-        | `Upgrade -> assert false
+        | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
       in
       try flat_tasks go
       with exn ->
