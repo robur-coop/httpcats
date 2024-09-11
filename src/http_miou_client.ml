@@ -26,16 +26,15 @@ module H2_Client_connection = struct
     (next_read_operation t :> [ `Close | `Read | `Yield | `Upgrade ])
 
   let next_write_operation t =
-    (next_write_operation t
-      :> [ `Close of int
-         | `Write of Bigstringaf.t Faraday.iovec list
-         | `Yield
-         | `Upgrade ])
+    (next_write_operation t :> [ `Close of int
+      | `Write of Bigstringaf.t Faraday.iovec list
+      | `Yield
+      | `Upgrade ])
 end
 
-module A = Runtime.Make (Tls_miou_unix) (H1_Client_connection)
+module A = Runtime.Make (TLS) (H1_Client_connection)
 module B = Runtime.Make (TCP) (H1_Client_connection)
-module C = Runtime.Make (Tls_miou_unix) (H2_Client_connection)
+module C = Runtime.Make (TLS) (H2_Client_connection)
 module D = Runtime.Make (TCP) (H2_Client_connection)
 
 type config = [ `V1 of H1.Config.t | `V2 of H2.Config.t ]
@@ -72,11 +71,14 @@ exception Error of error
 
 let empty = Printexc.get_callstack 0
 
-type 'acc await = unit -> ('acc, error) result
-
 type 'acc process =
-  | Process :
-      ('resp, 'body) version * 'acc await * 'resp Miou.Computation.t * 'body
+  | Process : {
+        version: ('resp, 'body) version
+      ; acc: 'acc ref
+      ; response: 'resp Miou.Computation.t
+      ; body: 'body
+      ; process: unit Miou.t
+    }
       -> 'acc process
 
 let http_1_1_response_handler ~f acc =
@@ -133,11 +135,8 @@ let pp_request ppf (flow, request) =
   | `Tls _, `V2 _ -> Fmt.string ppf "h2 + tls"
   | `Tcp _, `V2 _ -> Fmt.string ppf "h2"
 
-let await_with acc prm () =
-  match Miou.await prm with Ok () -> Ok !acc | Error exn -> Error (`Exn exn)
-
 let run ~f acc config flow request =
-  Log.debug (fun m -> m "Start a new %a request" pp_request (flow, request));
+  Log.debug (fun m -> m "start a new %a request" pp_request (flow, request));
   match (flow, config, request) with
   | `Tls flow, `V1 config, `V1 request ->
       let read_buffer_size = config.H1.Config.read_buffer_size in
@@ -148,7 +147,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let prm = A.run conn ~read_buffer_size flow in
-      Process (V1, await_with acc prm, response, body)
+      Process { version= V1; acc; response; body; process= prm }
   | `Tcp flow, `V1 config, `V1 request ->
       let read_buffer_size = config.H1.Config.read_buffer_size in
       let response_handler, response, acc = http_1_1_response_handler ~f acc in
@@ -158,7 +157,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let prm = B.run conn ~read_buffer_size flow in
-      Process (V1, await_with acc prm, response, body)
+      Process { version= V1; acc; response; body; process= prm }
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
@@ -170,7 +169,7 @@ let run ~f acc config flow request =
           request
       in
       let prm = C.run conn ~read_buffer_size flow in
-      Process (V2, await_with acc prm, response, body)
+      Process { version= V2; acc; response; body; process= prm }
   | `Tcp flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
@@ -182,5 +181,5 @@ let run ~f acc config flow request =
           request
       in
       let prm = D.run conn ~read_buffer_size flow in
-      Process (V2, await_with acc prm, response, body)
+      Process { version= V2; acc; response; body; process= prm }
   | _ -> invalid_arg "Http_miou_client.run"

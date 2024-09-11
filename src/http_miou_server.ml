@@ -27,7 +27,7 @@ module H2_Server_connection = struct
 end
 
 module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
-module C = Runtime.Make (Tls_miou_unix) (H2_Server_connection)
+module C = Runtime.Make (TLS) (H2_Server_connection)
 
 type error =
   [ `V1 of H1.Server_connection.error

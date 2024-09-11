@@ -155,3 +155,10 @@ val decode_uri : string -> (uri, [> `Msg of string ]) result
 
 val resolve_location :
   uri:string -> location:string -> (string, [> `Msg of string ]) result
+
+val prepare_headers :
+     ?config:[ `HTTP_1_1 of H1.Config.t | `H2 of H2.Config.t ]
+  -> uri:string
+  -> ?body:body
+  -> (string * string) list
+  -> ((string * string) list, [> `Msg of string ]) result

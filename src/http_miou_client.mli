@@ -17,11 +17,14 @@ type ('resp, 'body) version =
 
 exception Error of error
 
-type 'acc await = unit -> ('acc, error) result
-
 type 'acc process =
-  | Process :
-      ('resp, 'body) version * 'acc await * 'resp Miou.Computation.t * 'body
+  | Process : {
+        version: ('resp, 'body) version
+      ; acc: 'acc ref
+      ; response: 'resp Miou.Computation.t
+      ; body: 'body
+      ; process: unit Miou.t
+    }
       -> 'acc process
 
 val run :

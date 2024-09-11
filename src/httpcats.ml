@@ -9,6 +9,8 @@ module Version = H1.Version
 module Status = H2.Status
 module Headers = H2.Headers
 
+let ( % ) f g x = f (g x)
+let open_error = function Ok _ as v -> v | Error #Client.error as v -> v
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let open_error_msg = function Ok _ as v -> v | Error (`Msg _) as v -> v
 
@@ -148,7 +150,7 @@ let prep_http_1_1_headers hdr host user_pass body =
   in
   add_authentication ~add hdr user_pass
 
-let prep_h2_headers hdr (host : string) user_pass blen =
+let prep_h2_headers hdr (host : string) user_pass =
   (* please note, that h2 (at least in version 0.10.0) encodes the headers
      in reverse order ; and for http/2 compatibility we need to retain the
      :authority pseudo-header first (after method/scheme/... that are encoded
@@ -173,9 +175,6 @@ let prep_h2_headers hdr (host : string) user_pass blen =
   let hdr = H2.Headers.add_list H2.Headers.empty (H2.Headers.to_rev_list hdr) in
   let hdr = add hdr ":authority" authority in
   let hdr = add hdr "user-agent" user_agent in
-  let hdr =
-    add hdr "content-length" (string_of_int (Option.value ~default:0 blen))
-  in
   add_authentication ~add hdr user_pass
 
 let from_h1 response =
@@ -230,7 +229,6 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
   in
   let request = H1.Request.create ~headers:hdrs cfg.meth cfg.path in
   let f (`V1 response : Client.response) acc str =
-    Log.debug (fun m -> m "Got a response");
     let resp = from_h1 response in
     fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp acc (Some str)
   in
@@ -240,48 +238,49 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
     | `Tcp flow -> Http_miou_unix.TCP.close flow
   in
   Fun.protect ~finally @@ fun () ->
-  let (Client.Process (V1, await, resp, body)) =
+  let (Client.Process { version= V1; acc; response; body; process }) =
     Client.run ~f acc (`V1 config) flow (`V1 request)
   in
   let go orphans =
+    Log.debug (fun m -> m "Start to send something to the server.");
     let seq, to_close =
       match cfg.body with
       | Some (String str) -> (Seq.return str, true)
       | Some (Stream seq) -> (seq, true)
       | None -> (Seq.empty, false)
     in
-    let send str = H1.Body.Writer.write_string body str in
+    let send str =
+      H1.Body.Writer.write_string body str;
+      H1.Body.Writer.flush body Miou.yield;
+      Miou.yield ()
+    in
     Seq.iter send seq;
+    Log.debug (fun m -> m "body sent (through http/1.1), close it (%b)" to_close);
     if to_close then H1.Body.Writer.close body;
     Runtime.terminate orphans
   in
-  Runtime.flat_tasks go;
-  match (await (), Miou.Computation.await resp) with
-  | Ok acc, Ok resp ->
-      let resp = from_h1 resp in
-      Ok (resp, fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp acc None)
-  | Error (#Client.error as err), _
-  | _, Error (Client.Error (#Client.error as err), _) ->
-      Error (err :> error)
-  | _, Error (exn, _) -> Error (`Exn exn)
+  let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
+  let on_error = function Client.Error err -> err | exn -> `Exn exn in
+  let ( let* ) = Result.bind in
+  let* () = Result.map_error on_error (Miou.await sender) in
+  let* () = Result.map_error on_error (Miou.await process) in
+  let* resp =
+    Result.map_error (on_error % fst) (Miou.Computation.await response)
+  in
+  let resp = from_h1 resp in
+  Ok (resp, fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp !acc None)
 
 let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
     ~f:fn acc =
-  let contents_length =
-    match cfg.body with
-    | Some (String str) -> Some (String.length str)
-    | _ -> None
-  in
-  let hdrs =
-    prep_h2_headers cfg.headers cfg.host cfg.user_pass contents_length
-  in
+  let hdrs = prep_h2_headers cfg.headers cfg.host cfg.user_pass in
+  Log.debug (fun m -> m "h2 headers: @[<hov>%a@]" H2.Headers.pp_hum hdrs);
   let request =
     H2.Request.create ~scheme:cfg.scheme ~headers:hdrs cfg.meth cfg.path
   in
   let f (`V2 response : Client.response) acc str =
     fn ((cfg.ipaddr, cfg.port), cfg.epoch) (from_h2 response) acc (Some str)
   in
-  let (Client.Process (V2, await, resp, body)) =
+  let (Client.Process { version= V2; acc; response; body; process }) =
     Client.run ~f acc (`V2 config) flow (`V2 request)
   in
   let go orphans =
@@ -291,18 +290,25 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
       | Some (Stream seq) -> seq
       | None -> Seq.empty
     in
-    let send str = H2.Body.Writer.write_string body str in
-    Seq.iter send seq; H2.Body.Writer.close body; Runtime.terminate orphans
+    let send str =
+      H2.Body.Writer.write_string body str;
+      H2.Body.Writer.flush body (fun _reason -> Miou.yield ());
+      Miou.yield ()
+    in
+    Seq.iter send seq;
+    Log.debug (fun m -> m "body sent (through h2), close it");
+    H2.Body.Writer.close body; Runtime.terminate orphans
   in
-  Runtime.flat_tasks go;
-  match (await (), Miou.Computation.await resp) with
-  | Ok acc, Ok resp ->
-      let resp = from_h2 resp in
-      Ok (resp, fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp acc None)
-  | Error (#Client.error as err), _
-  | _, Error (Client.Error (#Client.error as err), _) ->
-      Error (err :> error)
-  | _, Error (exn, _) -> Error (`Exn exn)
+  let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
+  let on_error = function Client.Error err -> err | exn -> `Exn exn in
+  let ( let* ) = Result.bind in
+  let* () = Result.map_error on_error (Miou.await sender) in
+  let* () = Result.map_error on_error (Miou.await process) in
+  let* resp =
+    Result.map_error (on_error % fst) (Miou.Computation.await response)
+  in
+  let resp = from_h2 resp in
+  Ok (resp, fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp !acc None)
 
 let alpn_protocol = function
   | `Tcp _ -> None
@@ -443,22 +449,25 @@ let single_request cfg ~f acc =
     ; epoch
     }
   in
-  match (alpn_protocol flow, cfg.http_config) with
-  | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
-      single_http_1_1_request ~config flow cfg' ~f acc
-  | (Some `HTTP_1_1 | None), None -> single_http_1_1_request flow cfg' ~f acc
-  | Some `H2, Some (`H2 config) -> single_h2_request ~config flow cfg' ~f acc
-  | None, Some (`H2 _) ->
-      Log.warn (fun m ->
-          m "No ALPN protocol (choose http/1.1) where user forces h2");
-      single_http_1_1_request flow cfg' ~f acc
-  | Some `H2, None -> single_h2_request flow cfg' ~f acc
-  | Some `H2, Some (`HTTP_1_1 _) ->
-      Log.warn (fun m -> m "ALPN protocol is h2 where user forces http/1.1");
-      single_h2_request flow cfg' ~f acc
-  | Some `HTTP_1_1, Some (`H2 _) ->
-      Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
-      single_http_1_1_request flow cfg' ~f acc
+  let result =
+    match (alpn_protocol flow, cfg.http_config) with
+    | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
+        single_http_1_1_request ~config flow cfg' ~f acc
+    | (Some `HTTP_1_1 | None), None -> single_http_1_1_request flow cfg' ~f acc
+    | Some `H2, Some (`H2 config) -> single_h2_request ~config flow cfg' ~f acc
+    | None, Some (`H2 _) ->
+        Log.warn (fun m ->
+            m "no ALPN protocol (choose http/1.1) where user forces h2");
+        single_http_1_1_request flow cfg' ~f acc
+    | Some `H2, None -> single_h2_request flow cfg' ~f acc
+    | Some `H2, Some (`HTTP_1_1 _) ->
+        Log.warn (fun m -> m "ALPN protocol is h2 where user forces http/1.1");
+        single_h2_request flow cfg' ~f acc
+    | Some `HTTP_1_1, Some (`H2 _) ->
+        Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
+        single_http_1_1_request flow cfg' ~f acc
+  in
+  open_error result
 
 let string str = String str
 let stream seq = Stream seq
@@ -526,3 +535,18 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
             else Ok (resp, result)
     in
     go max_redirect uri
+
+let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~uri ?body
+    headers =
+  let ( let+ ) x f = Result.map f x in
+  let+ _tls, _scheme, user_pass, host, _port, _path = decode_uri uri in
+  match version with
+  | `HTTP_1_1 _ ->
+      let blen =
+        match body with
+        | Some (String str) -> Some (Some (String.length str))
+        | Some (Stream _) -> Some None
+        | None -> None
+      in
+      H1.Headers.to_list (prep_http_1_1_headers headers host user_pass blen)
+  | `H2 _ -> H2.Headers.to_list (prep_h2_headers headers host user_pass)

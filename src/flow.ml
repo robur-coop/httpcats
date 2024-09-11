@@ -1,3 +1,5 @@
+exception Closed_by_peer
+
 module type S = sig
   type t
 

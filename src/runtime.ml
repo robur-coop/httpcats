@@ -76,7 +76,8 @@ let rec terminate orphans =
       | Ok () -> terminate orphans
       | Error exn ->
           Log.err (fun m ->
-              m "Unexpected exception: %S" (Printexc.to_string exn));
+              m "unexpected exception from an asynchronous task: %S"
+                (Printexc.to_string exn));
           terminate orphans)
 
 type _ Effect.t += Spawn : (unit -> unit) -> unit Effect.t
@@ -85,9 +86,7 @@ let flat_tasks fn =
   let orphans = Miou.orphans () in
   let open Effect.Deep in
   let retc = Fun.id
-  and exnc exn =
-    Log.err (fun m -> m "Unexpected exception: %S" (Printexc.to_string exn));
-    raise exn
+  and exnc exn = raise exn
   and effc : type c. c Effect.t -> ((c, 'a) continuation -> 'a) option =
     function
     | Spawn fn ->
@@ -95,16 +94,14 @@ let flat_tasks fn =
         let _ =
           Miou.async ~orphans @@ fun () ->
           Log.debug (fun m -> m "function spawned");
-          try fn ()
-          with exn ->
-            Log.err (fun m ->
-                m "Unexpected exception: %S" (Printexc.to_string exn));
-            raise exn
+          fn ()
         in
         Some (fun k -> continue k ())
     | _ -> None
   in
   match_with fn orphans { retc; exnc; effc }
+
+exception Closed_by_peer = Flow.Closed_by_peer
 
 module Make (Flow : Flow.S) (Runtime : S) = struct
   type conn = Runtime.t
@@ -115,9 +112,9 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
       Buffer.put buffer ~f:(fun bstr ~off:dst_off ~len ->
           let buf = Bytes.create len in
           try
-            let len = Flow.read flow buf ~off:0 ~len in
-            Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len;
-            len
+            let len' = Flow.read flow buf ~off:0 ~len in
+            Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len:len';
+            len'
           with exn -> Flow.close flow; raise exn)
     in
     if bytes_read = 0 then `Eof else `Ok bytes_read
@@ -131,13 +128,19 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     try
       List.iter (Flow.write flow) strs;
       `Ok len
-    with _exn -> Flow.close flow; `Closed
+    with
+    | Closed_by_peer -> `Closed
+    | _exn -> Flow.close flow; `Closed
+
+  let shutdown flow cmd =
+    try Flow.shutdown flow cmd
+    with exn ->
+      Log.err (fun m -> m "error when we shutdown: %S" (Printexc.to_string exn))
 
   let run conn ~read_buffer_size flow =
     let buffer = Buffer.create read_buffer_size in
     let rec reader () =
       let rec go orphans =
-        Log.debug (fun m -> m "next_read_operation");
         match Runtime.next_read_operation conn with
         | `Read -> begin
             match recv flow buffer with
@@ -161,12 +164,13 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
         | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
         | `Close ->
             Log.debug (fun m -> m "shutdown the reader");
-            Flow.shutdown flow `read;
+            shutdown flow `read;
             terminate orphans
       in
       try flat_tasks go
       with exn ->
-        Log.err (fun m -> m "report an exception: %S" (Printexc.to_string exn));
+        Log.err (fun m ->
+            m "report an exception the reader: %S" (Printexc.to_string exn));
         let go orphans =
           Runtime.report_exn conn exn;
           terminate orphans
@@ -175,7 +179,6 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     in
     let rec writer () =
       let rec go orphans =
-        Log.debug (fun m -> m "next_write_operation");
         match Runtime.next_write_operation conn with
         | `Write iovecs ->
             let len =
@@ -194,13 +197,14 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             terminate orphans
         | `Close _ ->
             Log.debug (fun m -> m "shutdown the writer");
-            Flow.shutdown flow `write;
+            shutdown flow `write;
             terminate orphans
         | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
       in
       try flat_tasks go
       with exn ->
-        Log.err (fun m -> m "report an exception: %S" (Printexc.to_string exn));
+        Log.err (fun m ->
+            m "report an exception from the writer: %S" (Printexc.to_string exn));
         let go orphans =
           Runtime.report_exn conn exn;
           terminate orphans
@@ -210,11 +214,11 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     Miou.async @@ fun () ->
     let p0 = Miou.async reader and p1 = Miou.async writer in
     match Miou.await_all [ p0; p1 ] with
-    | [ Ok (); Ok () ] -> Log.debug (fun m -> m "reader / writer terminates")
+    | [ Ok (); Ok () ] -> Log.debug (fun m -> m "reader & writer terminates")
     | [ Error exn; _ ] | [ _; Error exn ] ->
-        Log.err (fun m -> m "got an exception: %S" (Printexc.to_string exn));
+        Log.err (fun m ->
+            m "got an exception from reader or writer: %S"
+              (Printexc.to_string exn));
         raise exn
-    | _ ->
-        Log.err (fun m -> m "impossible");
-        assert false
+    | _ -> assert false
 end
