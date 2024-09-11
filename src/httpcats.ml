@@ -255,7 +255,6 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
       Miou.yield ()
     in
     Seq.iter send seq;
-    Log.debug (fun m -> m "body sent (through http/1.1), close it (%b)" to_close);
     if to_close then H1.Body.Writer.close body;
     Runtime.terminate orphans
   in
@@ -297,7 +296,8 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
     in
     Seq.iter send seq;
     Log.debug (fun m -> m "body sent (through h2), close it");
-    H2.Body.Writer.close body; Runtime.terminate orphans
+    H2.Body.Writer.close body;
+    Runtime.terminate orphans
   in
   let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
   let on_error = function Client.Error err -> err | exn -> `Exn exn in
