@@ -241,22 +241,21 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
   let (Client.Process { version= V1; acc; response; body; process }) =
     Client.run ~f acc (`V1 config) flow (`V1 request)
   in
-  let go orphans =
-    Log.debug (fun m -> m "Start to send something to the server.");
-    let seq, to_close =
-      match cfg.body with
-      | Some (String str) -> (Seq.return str, true)
-      | Some (Stream seq) -> (seq, true)
-      | None -> (Seq.empty, false)
+  let seq, to_close =
+    match cfg.body with
+    | Some (String str) -> (Seq.return str, true)
+    | Some (Stream seq) -> (seq, true)
+    | None -> (Seq.empty, false)
+  in
+  let go _orphans =
+    let rec next seq =
+      match Seq.uncons seq with
+      | None -> if to_close then H1.Body.Writer.close body
+      | Some (str, seq) ->
+          H1.Body.Writer.write_string body str;
+          H1.Body.Writer.flush body (fun () -> next seq)
     in
-    let send str =
-      H1.Body.Writer.write_string body str;
-      H1.Body.Writer.flush body Miou.yield;
-      Miou.yield ()
-    in
-    Seq.iter send seq;
-    if to_close then H1.Body.Writer.close body;
-    Runtime.terminate orphans
+    next seq
   in
   let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
   let on_error = function Client.Error err -> err | exn -> `Exn exn in
@@ -282,22 +281,24 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
   let (Client.Process { version= V2; acc; response; body; process }) =
     Client.run ~f acc (`V2 config) flow (`V2 request)
   in
-  let go orphans =
-    let seq =
-      match cfg.body with
-      | Some (String str) -> Seq.return str
-      | Some (Stream seq) -> seq
-      | None -> Seq.empty
+  let seq =
+    match cfg.body with
+    | Some (String str) -> Seq.return str
+    | Some (Stream seq) -> seq
+    | None -> Seq.empty
+  in
+  let go _orphans =
+    let rec next seq reason =
+      match reason with
+      | `Closed -> H2.Body.Writer.close body
+      | `Written -> (
+          match Seq.uncons seq with
+          | None -> H2.Body.Writer.close body
+          | Some (str, seq) ->
+              H2.Body.Writer.write_string body str;
+              H2.Body.Writer.flush body (fun reason -> next seq reason))
     in
-    let send str =
-      H2.Body.Writer.write_string body str;
-      H2.Body.Writer.flush body (fun _reason -> Miou.yield ());
-      Miou.yield ()
-    in
-    Seq.iter send seq;
-    Log.debug (fun m -> m "body sent (through h2), close it");
-    H2.Body.Writer.close body;
-    Runtime.terminate orphans
+    next seq `Written
   in
   let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
   let on_error = function Client.Error err -> err | exn -> `Exn exn in

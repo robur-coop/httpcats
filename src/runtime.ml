@@ -80,22 +80,32 @@ let rec terminate orphans =
                 (Printexc.to_string exn));
           terminate orphans)
 
+let rec clean orphans =
+  match Miou.care orphans with
+  | None -> Miou.yield ()
+  | Some None -> Miou.yield ()
+  | Some (Some prm) -> begin
+      match Miou.await prm with
+      | Ok () -> clean orphans
+      | Error exn ->
+          Log.err (fun m ->
+              m "unexpected exception from an asynchronous task: %S"
+                (Printexc.to_string exn));
+          clean orphans
+    end
+
 type _ Effect.t += Spawn : (unit -> unit) -> unit Effect.t
 
 let flat_tasks fn =
   let orphans = Miou.orphans () in
   let open Effect.Deep in
-  let retc = Fun.id
-  and exnc exn = raise exn
+  let retc value = terminate orphans; value
+  and exnc exn = terminate orphans; raise exn
   and effc : type c. c Effect.t -> ((c, 'a) continuation -> 'a) option =
     function
     | Spawn fn ->
-        Log.debug (fun m -> m "spawn a new task");
-        let _ =
-          Miou.async ~orphans @@ fun () ->
-          Log.debug (fun m -> m "function spawned");
-          fn ()
-        in
+        clean orphans;
+        ignore (Miou.async ~orphans fn);
         Some (fun k -> continue k ())
     | _ -> None
   in
@@ -159,22 +169,17 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
               Effect.perform (Spawn reader)
             in
             Runtime.yield_reader conn k;
-            Log.debug (fun m -> m "yield the reader");
-            terminate orphans
+            Log.debug (fun m -> m "yield the reader")
         | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
         | `Close ->
             Log.debug (fun m -> m "shutdown the reader");
-            shutdown flow `read;
-            terminate orphans
+            shutdown flow `read
       in
       try flat_tasks go
       with exn ->
         Log.err (fun m ->
             m "report an exception the reader: %S" (Printexc.to_string exn));
-        let go orphans =
-          Runtime.report_exn conn exn;
-          terminate orphans
-        in
+        let go _orphans = Runtime.report_exn conn exn in
         flat_tasks go
     in
     let rec writer () =
@@ -193,22 +198,17 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
               Effect.perform (Spawn writer)
             in
             Runtime.yield_writer conn k;
-            Log.debug (fun m -> m "yield the writer");
-            terminate orphans
+            Log.debug (fun m -> m "yield the writer")
         | `Close _ ->
             Log.debug (fun m -> m "shutdown the writer");
-            shutdown flow `write;
-            terminate orphans
+            shutdown flow `write
         | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
       in
       try flat_tasks go
       with exn ->
         Log.err (fun m ->
             m "report an exception from the writer: %S" (Printexc.to_string exn));
-        let go orphans =
-          Runtime.report_exn conn exn;
-          terminate orphans
-        in
+        let go _orphans = Runtime.report_exn conn exn in
         flat_tasks go
     in
     Miou.async @@ fun () ->

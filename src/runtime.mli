@@ -28,4 +28,5 @@ module Make (Flow : Flow.S) (Runtime : S) : sig
 end
 
 val terminate : unit Miou.orphans -> unit
+val clean : unit Miou.orphans -> unit
 val flat_tasks : (unit Miou.orphans -> 'a) -> 'a

@@ -26,10 +26,11 @@ module H2_Client_connection = struct
     (next_read_operation t :> [ `Close | `Read | `Yield | `Upgrade ])
 
   let next_write_operation t =
-    (next_write_operation t :> [ `Close of int
-      | `Write of Bigstringaf.t Faraday.iovec list
-      | `Yield
-      | `Upgrade ])
+    (next_write_operation t
+      :> [ `Close of int
+         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Yield
+         | `Upgrade ])
 end
 
 module A = Runtime.Make (TLS) (H1_Client_connection)
