@@ -105,16 +105,22 @@ Here are the results of a benchmark of `examples/server.ml` with [rewrk][rewrk]:
 
 | threads (server) | threads (client) | connections / threads | requests/s |
 |------------------|------------------|-----------------------|------------|
-| 0                | 12               | 256                   | ~ 45k      |
+| 0                | 12               | 256                   | ~ 42k      |
 | 1                | 12               | 256                   | ~ 70k      |
-| 2                | 12               | 256                   | ~ 72k      |
-| 4                | 12               | 256                   | ~ 130k     |
-| 8                | 12               | 256                   | ~ 160k     |
+| 2                | 12               | 256                   | ~ 74k      |
+| 4                | 12               | 256                   | ~ 155k     |
+| 8                | 12               | 256                   | ~ 300k     |
+| 16               | 12               | 256                   | ~ 485k     |
 | MIOU_DOMAINS     | rewrk -t         | rewrk -c              |            |
 
-More domains than 8 won't handle more requests. It seems that 8 domains is the
-glass ceiling for httpcats. For comparison, here's the result for
-[CoHTTP][cohttp] (which, this time, takes advantage of [io_uring][io_uring]):
+`miou` is currently based on the simple idea that increasing the number of cores
+should make the service more available. So, the more domains available, the more
+`httpcats` is able to handle requests **in parallel**. It is for this reason
+that `httpcats` can easily outperform http server implementations just by
+increasing the number of domains.
+
+For comparison, here's the result for [CoHTTP][cohttp] (which, this time, takes
+advantage of [io_uring][io_uring]):
 
 | threads (server) | threads (client) | connections / threads | requests/s |
 |------------------|------------------|-----------------------|------------|
@@ -128,9 +134,17 @@ your poison! However, there are several things to note about this benchmark:
    an area for optimization for miou (`io_uring`) to avoid this bottleneck.
 2) CoHTTP uses a single domain to manage your requests. For the sake of
    comparison and fair play, we should compare CoHTTP and httpcats with
-   `MIOU_DOMAINS=0`.
+   `MIOU_DOMAINS=0`. This comparison shows that `io_uring` can be a way of
+   optimising miou's syscall management. However, we prefer the more obvious
+   reasoning of simply increasing the number of domains to manage more requests
+   to that of having to change/complement the implementation in order to manage
+   more requests.
 3) The request handling behavior of httpcats and CoHTTP may also differ.
-   httpcats can also handle the h2 protocol (which CoHTTP doesn't).
+   httpcats can also handle the h2 protocol (which CoHTTP doesn't). In fact,
+   httpcats is based on an abstraction shared by [h1][h1] and [h2][h2], i.e.
+   abstraction by passing values which can effectively give rise to syscalls.
+   This is a different method to that proposed by CoHTTP, whose design uses
+   functors.
 4) The benchmark does not concern the TLS layer and, as mentioned above, CoHTTP
    may, depending on your system, use OpenSSL where httpcats will only use
    `ocaml-tls`.
@@ -142,7 +156,7 @@ on AMD Ryzen 9 7950X 16-Core, nginx can handle [178k req/s][nginx-benchmark].
 
 Finally, benchmarks (especially those concerning http) are difficult to make
 because they are hard to reproduce. So take the results as they come, but don't
-say that httpcats is faster than <any-dumb-http-implementation>.
+say that httpcats is faster than \<any-dumb-http-implementation\>.
 
 Finally, wouldn't this be the best http stack in OCaml?
 
