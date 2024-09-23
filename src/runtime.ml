@@ -1,4 +1,5 @@
 let src = Logs.Src.create "runtime"
+let _minor = (Sys.word_size / 8 * 256) - 1
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
@@ -120,6 +121,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   let recv flow buffer =
     let bytes_read =
       Buffer.put buffer ~f:(fun bstr ~off:dst_off ~len ->
+          let len = min len _minor in
           let buf = Bytes.create len in
           try
             let len' = Flow.read flow buf ~off:0 ~len in
@@ -129,14 +131,22 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     in
     if bytes_read = 0 then `Eof else `Ok bytes_read
 
+  let rec split acc bstr off len =
+    if len <= _minor then List.rev (Bigstringaf.substring bstr ~off ~len :: acc)
+    else
+      let len' = min len _minor in
+      let str = Bigstringaf.substring bstr ~off ~len:len' in
+      split (str :: acc) bstr (off + len') (len - len')
+
   let writev flow bstrs =
-    let copy { Faraday.buffer; off; len } =
-      Bigstringaf.substring buffer ~off ~len
+    let strss =
+      List.map
+        (fun { Faraday.buffer; off; len } -> split [] buffer off len)
+        bstrs
     in
-    let strs = List.map copy bstrs in
-    let len = List.fold_left (fun a str -> a + String.length str) 0 strs in
+    let len = List.fold_left (fun a { Faraday.len; _ } -> a + len) 0 bstrs in
     try
-      List.iter (Flow.write flow) strs;
+      List.iter (List.iter (Flow.write flow)) strss;
       `Ok len
     with
     | Closed_by_peer -> `Closed
@@ -147,7 +157,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     with exn ->
       Log.err (fun m -> m "error when we shutdown: %S" (Printexc.to_string exn))
 
-  let run conn ~read_buffer_size flow =
+  let run conn ?(read_buffer_size = _minor) flow =
     let buffer = Buffer.create read_buffer_size in
     let rec reader () =
       let rec go orphans =
