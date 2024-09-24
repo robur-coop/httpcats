@@ -96,7 +96,7 @@ val request :
   -> f:'a handler
   -> uri:string
   -> 'a
-  -> (response * 'a, error) result
+  -> (response * 'a, [> error ]) result
 (** [request] attempts to send a request to [uri]. Several arguments can be
     defined by the user or left as default. Mandatory arguments are:
     - the [uri] target of the request

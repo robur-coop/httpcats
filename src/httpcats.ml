@@ -10,7 +10,11 @@ module Status = H2.Status
 module Headers = H2.Headers
 
 let ( % ) f g x = f (g x)
-let open_error = function Ok _ as v -> v | Error #Client.error as v -> v
+
+let open_client_error = function
+  | Ok _ as v -> v
+  | Error #Client.error as err -> err
+
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let open_error_msg = function Ok _ as v -> v | Error (`Msg _) as v -> v
 
@@ -394,7 +398,7 @@ let connect_happy_eyeballs ?port ?tls_config ~happy_eyeballs host =
       let tls = Tls_miou_unix.client_of_fd tls_config file_descr in
       let epoch = Tls_miou_unix.epoch tls in
       Ok (`Tls tls, ipaddr, port, epoch)
-  | (Error _ as err), _ -> err
+  | (Error (`Msg _) as err), _ -> err
 
 type config_for_a_request = {
     resolver:
@@ -450,7 +454,7 @@ let single_request cfg ~f acc =
     ; epoch
     }
   in
-  let result =
+  begin
     match (alpn_protocol flow, cfg.http_config) with
     | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
         single_http_1_1_request ~config flow cfg' ~f acc
@@ -467,8 +471,8 @@ let single_request cfg ~f acc =
     | Some `HTTP_1_1, Some (`H2 _) ->
         Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
         single_http_1_1_request flow cfg' ~f acc
-  in
-  open_error result
+  end
+  |> open_client_error
 
 let string str = String str
 let stream seq = Stream seq
@@ -536,6 +540,18 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
             else Ok (resp, result)
     in
     go max_redirect uri
+
+let[@inline always] open_error = function
+  | Ok _ as v -> v
+  | Error #error as err -> err
+
+(* XXX(dinosaure): really? to open polymorphic variant... *)
+let[@inline always] request ?config ?tls_config ?authenticator ?(meth = `GET)
+    ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
+    ?(resolver = `System) ~f ~uri acc =
+  request ?config ?tls_config ?authenticator ~meth ~headers ?body ~max_redirect
+    ~follow_redirect ~resolver ~f ~uri acc
+  |> open_error
 
 let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~uri ?body
     headers =
