@@ -1,3 +1,9 @@
 (executable
  (name server)
+ (modules server)
+ (libraries fmt.tty logs.fmt logs.threaded httpcats))
+
+(executable
+ (name static)
+ (modules static)
  (libraries fmt.tty logs.fmt logs.threaded httpcats))
