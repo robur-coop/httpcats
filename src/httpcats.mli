@@ -4,8 +4,7 @@
     (though may follow redirects) to a remote uri. Both HTTP protocol 1.1 and
     2.0 are supported. Both http and https (via the pure implementation
     [ocaml-tls]) are supported. A connection is established via the
-    happy-eyeballs algorithm if provided.
-*)
+    happy-eyeballs algorithm if provided. *)
 
 type error =
   [ `V1 of H1.Client_connection.error
@@ -44,8 +43,9 @@ type response = {
 val pp_response : response Fmt.t
 (** Pretty printer of a {!response}. *)
 
-(** A body, consisting to a basic string or a stream ([string Seq.t]). The
-    last implies a {{:https://en.wikipedia.org/wiki/Chunked_transfer_encoding}“Chunked”}
+(** A body, consisting to a basic string or a stream ([string Seq.t]). The last
+    implies a
+    {{:https://en.wikipedia.org/wiki/Chunked_transfer_encoding}“Chunked”}
     transmission if not specified in the headers. *)
 type body = String of string | Stream of string Seq.t
 
@@ -116,8 +116,8 @@ val request :
 
     The user may want to send content (using [POST]). The user can specify a
     [body] value, which can be a simple [string] (see {!val:string}) or a stream
-    of bytes (see {!val:stream}). In the latter case, a {i chunked transfer
-    encoding} is preferred by [httpcats].
+    of bytes (see {!val:stream}). In the latter case, a
+    {i chunked transfer encoding} is preferred by [httpcats].
 
     It may happen that the resource is not directly accessible and that the
     server responds with a redirect. By default, [httpcats] follows redirects.

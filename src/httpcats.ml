@@ -245,23 +245,23 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
   let (Client.Process { version= V1; acc; response; body; process }) =
     Client.run ~f acc (`V1 config) flow (`V1 request)
   in
-  let seq, to_close =
+  let seq =
     match cfg.body with
-    | Some (String str) -> (Seq.return str, true)
-    | Some (Stream seq) -> (seq, true)
-    | None -> (Seq.empty, false)
+    | Some (String str) -> Seq.return str
+    | Some (Stream seq) -> seq
+    | None -> Seq.empty
   in
-  let go _orphans =
+  let go () =
     let rec next seq =
       match Seq.uncons seq with
-      | None -> if to_close then H1.Body.Writer.close body
+      | None -> H1.Body.Writer.close body
       | Some (str, seq) ->
           H1.Body.Writer.write_string body str;
           H1.Body.Writer.flush body (fun () -> next seq)
     in
     next seq
   in
-  let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
+  let sender = Miou.async go in
   let on_error = function Client.Error err -> err | exn -> `Exn exn in
   let ( let* ) = Result.bind in
   let* () = Result.map_error on_error (Miou.await sender) in
@@ -291,7 +291,7 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
     | Some (Stream seq) -> seq
     | None -> Seq.empty
   in
-  let go _orphans =
+  let go () =
     let rec next seq reason =
       match reason with
       | `Closed -> H2.Body.Writer.close body
@@ -304,7 +304,7 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
     in
     next seq `Written
   in
-  let sender = Miou.async @@ fun () -> Runtime.flat_tasks go in
+  let sender = Miou.async go in
   let on_error = function Client.Error err -> err | exn -> `Exn exn in
   let ( let* ) = Result.bind in
   let* () = Result.map_error on_error (Miou.await sender) in

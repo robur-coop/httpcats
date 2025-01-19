@@ -86,20 +86,14 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     let err =
       match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
     in
-    Runtime.flat_tasks @@ fun orphans ->
     let respond hdrs =
       let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
       let body = respond hdrs in
       `V1 body
     in
-    user's_error_handler ?request err respond;
-    Runtime.terminate orphans
+    user's_error_handler ?request err respond
   in
-  let request_handler reqd =
-    Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`Tcp flow) (`V1 reqd);
-    Runtime.terminate orphans
-  in
+  let request_handler reqd = user's_handler (`Tcp flow) (`V1 reqd) in
   let conn =
     H1.Server_connection.create ~config ~error_handler request_handler
   in
@@ -119,20 +113,14 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     let err =
       match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
     in
-    Runtime.flat_tasks @@ fun orphans ->
     let respond hdrs =
       let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
       let body = respond hdrs in
       `V1 body
     in
-    user's_error_handler ?request err respond;
-    Runtime.terminate orphans
+    user's_error_handler ?request err respond
   in
-  let request_handler reqd =
-    Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`Tls flow) (`V1 reqd);
-    Runtime.terminate orphans
-  in
+  let request_handler reqd = user's_handler (`Tls flow) (`V1 reqd) in
   let conn =
     H1.Server_connection.create ~config ~error_handler request_handler
   in
@@ -145,16 +133,10 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
     let err =
       match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V2 err
     in
-    Runtime.flat_tasks @@ fun orphans ->
     let respond hdrs = `V2 (respond hdrs) in
-    user's_error_handler ?request err respond;
-    Runtime.terminate orphans
+    user's_error_handler ?request err respond
   in
-  let request_handler reqd =
-    Runtime.flat_tasks @@ fun orphans ->
-    user's_handler (`Tls flow) (`V2 reqd);
-    Runtime.terminate orphans
-  in
+  let request_handler reqd = user's_handler (`Tls flow) (`V2 reqd) in
   let conn =
     H2.Server_connection.create ~config ~error_handler request_handler
   in

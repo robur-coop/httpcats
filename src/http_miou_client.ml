@@ -85,7 +85,7 @@ type 'acc process =
 let http_1_1_response_handler ~f acc =
   let acc = ref acc in
   let response = Miou.Computation.create () in
-  let go resp body orphans =
+  let response_handler resp body =
     ignore (Miou.Computation.try_return response resp);
     let rec on_eof () = H1.Body.Reader.close body
     and on_read bstr ~off ~len =
@@ -93,10 +93,8 @@ let http_1_1_response_handler ~f acc =
       acc := f (`V1 resp) !acc str;
       H1.Body.Reader.schedule_read body ~on_read ~on_eof
     in
-    H1.Body.Reader.schedule_read body ~on_read ~on_eof;
-    Runtime.terminate orphans
+    H1.Body.Reader.schedule_read body ~on_read ~on_eof
   in
-  let response_handler resp body = Runtime.flat_tasks (go resp body) in
   (response_handler, response, acc)
 
 let http_1_1_error_handler response err =
@@ -107,7 +105,7 @@ let http_1_1_error_handler response err =
 
 let h2_response_handler conn ~f response acc =
   let acc = ref acc in
-  let go resp body orphans =
+  let response_handler resp body =
     ignore (Miou.Computation.try_return response resp);
     let rec on_eof () =
       H2.Body.Reader.close body;
@@ -117,10 +115,8 @@ let h2_response_handler conn ~f response acc =
       acc := f (`V2 resp) !acc str;
       H2.Body.Reader.schedule_read body ~on_read ~on_eof
     in
-    H2.Body.Reader.schedule_read body ~on_read ~on_eof;
-    Runtime.terminate orphans
+    H2.Body.Reader.schedule_read body ~on_read ~on_eof
   in
-  let response_handler resp body = Runtime.flat_tasks (go resp body) in
   (response_handler, acc)
 
 let h2_error_handler response err =
