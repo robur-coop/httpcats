@@ -95,23 +95,6 @@ let rec clean orphans =
           clean orphans
     end
 
-type _ Effect.t += Spawn : (unit -> unit) -> unit Effect.t
-
-let flat_tasks fn =
-  let orphans = Miou.orphans () in
-  let open Effect.Deep in
-  let retc value = terminate orphans; value
-  and exnc exn = terminate orphans; raise exn
-  and effc : type c. c Effect.t -> ((c, 'a) continuation -> 'a) option =
-    function
-    | Spawn fn ->
-        clean orphans;
-        ignore (Miou.async ~orphans fn);
-        Some (fun k -> continue k ())
-    | _ -> None
-  in
-  match_with fn orphans { retc; exnc; effc }
-
 exception Closed_by_peer = Flow.Closed_by_peer
 
 module Make (Flow : Flow.S) (Runtime : S) = struct
@@ -157,78 +140,83 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     with exn ->
       Log.err (fun m -> m "error when we shutdown: %S" (Printexc.to_string exn))
 
+  type t = {
+      conn: Runtime.t
+    ; flow: Flow.t
+    ; tasks: (unit -> unit) Queue.t
+    ; buffer: Buffer.t
+    ; stop: bool ref
+  }
+
+  let reader t =
+    let rec go () =
+      match Runtime.next_read_operation t.conn with
+      | `Read ->
+          let f =
+            match recv t.flow t.buffer with
+            | `Eof -> Runtime.read_eof t.conn
+            | `Ok _ -> Runtime.read t.conn
+          in
+          let _ = Buffer.get t.buffer ~f in
+          go ()
+      | `Yield ->
+          let k () = Queue.push go t.tasks in
+          Log.debug (fun m -> m "+reader yield");
+          Runtime.yield_reader t.conn k
+      | `Close ->
+          Log.debug (fun m -> m "+reader closed");
+          shutdown t.flow `read;
+          t.stop := true
+      | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
+    in
+    go
+
+  let writer t =
+    let rec go () =
+      match Runtime.next_write_operation t.conn with
+      | `Write iovecs ->
+          let fn acc { Faraday.len; _ } = acc + len in
+          let len = List.fold_left fn 0 iovecs in
+          Log.debug (fun m -> m "+write %d byte(s)" len);
+          writev t.flow iovecs |> Runtime.report_write_result t.conn;
+          go ()
+      | `Yield ->
+          let k () = Queue.push go t.tasks in
+          Log.debug (fun m -> m "+writer yield");
+          Runtime.yield_writer t.conn k
+      | `Close _ ->
+          Log.debug (fun m -> m "+writer closed");
+          shutdown t.flow `write;
+          t.stop := true
+      | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
+    in
+    go
+
   let run conn ?(read_buffer_size = _minor) flow =
     let buffer = Buffer.create read_buffer_size in
-    let rec reader () =
+    let s_reader = ref false and s_writer = ref false in
+    let tasks = Queue.create () in
+    let runner () =
       let rec go orphans =
-        match Runtime.next_read_operation conn with
-        | `Read -> begin
-            match recv flow buffer with
-            | `Eof ->
-                Log.debug (fun m -> m "the connection is closed by peer");
-                let _ = Buffer.get buffer ~f:(Runtime.read_eof conn) in
-                go orphans
-            | `Ok len ->
-                Log.debug (fun m -> m "read %d byte(s)" len);
-                let _ = Buffer.get buffer ~f:(Runtime.read conn) in
+        let seq = Queue.to_seq tasks in
+        let lst = List.of_seq seq in
+        Queue.clear tasks;
+        Log.debug (fun m -> m "+%d task(s)" (List.length lst));
+        List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
+        match Miou.care orphans with
+        | None -> if (not !s_reader) || not !s_writer then go orphans
+        | Some None -> Miou.yield (); go orphans
+        | Some (Some prm) -> begin
+            match Miou.await prm with
+            | Ok () -> go orphans
+            | Error exn ->
+                Runtime.report_exn conn exn;
                 go orphans
           end
-        | `Yield ->
-            let k () =
-              Log.debug (fun m -> m "spawn reader");
-              Effect.perform (Spawn reader)
-            in
-            Runtime.yield_reader conn k;
-            Log.debug (fun m -> m "yield the reader")
-        | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
-        | `Close ->
-            Log.debug (fun m -> m "shutdown the reader");
-            shutdown flow `read
       in
-      try flat_tasks go
-      with exn ->
-        Log.err (fun m ->
-            m "report an exception the reader: %S" (Printexc.to_string exn));
-        let go _orphans = Runtime.report_exn conn exn in
-        flat_tasks go
+      go (Miou.orphans ())
     in
-    let rec writer () =
-      let rec go orphans =
-        match Runtime.next_write_operation conn with
-        | `Write iovecs ->
-            let len =
-              List.fold_left (fun acc { Faraday.len; _ } -> acc + len) 0 iovecs
-            in
-            Log.debug (fun m -> m "write %d byte(s)" len);
-            writev flow iovecs |> Runtime.report_write_result conn;
-            go orphans
-        | `Yield ->
-            let k () =
-              Log.debug (fun m -> m "spawn writer");
-              Effect.perform (Spawn writer)
-            in
-            Runtime.yield_writer conn k;
-            Log.debug (fun m -> m "yield the writer")
-        | `Close _ ->
-            Log.debug (fun m -> m "shutdown the writer");
-            shutdown flow `write
-        | `Upgrade -> Fmt.failwith "Upgrade unimplemented"
-      in
-      try flat_tasks go
-      with exn ->
-        Log.err (fun m ->
-            m "report an exception from the writer: %S" (Printexc.to_string exn));
-        let go _orphans = Runtime.report_exn conn exn in
-        flat_tasks go
-    in
-    Miou.async @@ fun () ->
-    let p0 = Miou.async reader and p1 = Miou.async writer in
-    match Miou.await_all [ p0; p1 ] with
-    | [ Ok (); Ok () ] -> Log.debug (fun m -> m "reader & writer terminates")
-    | [ Error exn; _ ] | [ _; Error exn ] ->
-        Log.err (fun m ->
-            m "got an exception from reader or writer: %S"
-              (Printexc.to_string exn));
-        raise exn
-    | _ -> assert false
+    let rd = reader { conn; flow; tasks; buffer; stop= s_reader } in
+    let wr = writer { conn; flow; tasks; buffer; stop= s_writer } in
+    Queue.push rd tasks; Queue.push wr tasks; Miou.async runner
 end

@@ -29,4 +29,4 @@ end
 
 val terminate : unit Miou.orphans -> unit
 val clean : unit Miou.orphans -> unit
-val flat_tasks : (unit Miou.orphans -> 'a) -> 'a
+(* val flat_tasks : (unit Miou.orphans -> 'a) -> 'a *)
