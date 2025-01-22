@@ -11,18 +11,19 @@ type error =
 
 val pp_error : error Fmt.t
 
-type ('resp, 'body) version =
-  | V1 : (H1.Response.t, H1.Body.Writer.t) version
-  | V2 : (H2.Response.t, H2.Body.Writer.t) version
+type ('conn, 'resp, 'body) version =
+  | V1 : (H1.Client_connection.t, H1.Response.t, H1.Body.Writer.t) version
+  | V2 : (H2.Client_connection.t, H2.Response.t, H2.Body.Writer.t) version
 
 exception Error of error
 
 type 'acc process =
   | Process : {
-        version: ('resp, 'body) version
+        version: ('conn, 'resp, 'body) version
       ; acc: 'acc ref
       ; response: 'resp Miou.Computation.t
       ; body: 'body
+      ; conn: 'conn
       ; process: unit Miou.t
     }
       -> 'acc process

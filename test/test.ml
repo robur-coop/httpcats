@@ -312,6 +312,7 @@ let ( % ) f g x = f (g x)
 let test03 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   let open Rresult in
+  let ( let* ) = Result.bind in
   Miou_unix.run ~domains @@ fun () ->
   let handler _ = function
     | `V2 reqd ->
@@ -355,14 +356,18 @@ let test03 =
   in
   let h2 =
     Miou.async @@ fun () ->
-    Httpcats.request ~resolver:(`Happy resolver) ~authenticator
-      ~f:(fun _ _resp buf -> function
-        | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    let* res =
+      Httpcats.request ~resolver:(`Happy resolver) ~authenticator
+        ~f:(fun _ _resp buf -> function
+          | Some str -> Buffer.add_string buf str; buf | None -> buf)
+        ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
+      |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    in
+    Logs.debug (fun m -> m "End of h2 request");
+    Ok res
   in
   match
-    Miou.await_all [ h2; http_1_1 ]
+    Miou.await_all [ http_1_1; h2 ]
     |> List.map (R.reword_error (R.msgf "%s" % Printexc.to_string))
     |> List.map Result.join
   with

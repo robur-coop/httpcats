@@ -158,6 +158,7 @@ val resolve_location :
 
 val prepare_headers :
      ?config:[ `HTTP_1_1 of H1.Config.t | `H2 of H2.Config.t ]
+  -> meth:H1.Method.t
   -> uri:string
   -> ?body:body
   -> (string * string) list

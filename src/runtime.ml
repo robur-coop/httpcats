@@ -27,8 +27,8 @@ module Buffer : sig
   type t
 
   val create : int -> t
-  val get : t -> f:(Bigstringaf.t -> off:int -> len:int -> int) -> int
-  val put : t -> f:(Bigstringaf.t -> off:int -> len:int -> int) -> int
+  val get : t -> fn:(Bigstringaf.t -> off:int -> len:int -> int) -> int
+  val put : t -> fn:(Bigstringaf.t -> off:int -> len:int -> int) -> int
 end = struct
   type t = { mutable buffer: Bigstringaf.t; mutable off: int; mutable len: int }
 
@@ -46,14 +46,14 @@ end = struct
       t.off <- 0
     end
 
-  let get t ~f =
-    let n = f t.buffer ~off:t.off ~len:t.len in
+  let get t ~fn =
+    let n = fn t.buffer ~off:t.off ~len:t.len in
     t.off <- t.off + n;
     t.len <- t.len - n;
     if t.len = 0 then t.off <- 0;
     n
 
-  let put t ~f =
+  let put t ~fn =
     compress t;
     let off = t.off + t.len in
     let buf = t.buffer in
@@ -61,7 +61,7 @@ end = struct
       t.buffer <- Bigstringaf.create (2 * Bigstringaf.length buf);
       Bigstringaf.blit buf ~src_off:t.off t.buffer ~dst_off:0 ~len:t.len
     end;
-    let n = f t.buffer ~off ~len:(Bigstringaf.length t.buffer - off) in
+    let n = fn t.buffer ~off ~len:(Bigstringaf.length t.buffer - off) in
     t.len <- t.len + n;
     n
 end
@@ -103,7 +103,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
 
   let recv flow buffer =
     let bytes_read =
-      Buffer.put buffer ~f:(fun bstr ~off:dst_off ~len ->
+      Buffer.put buffer ~fn:(fun bstr ~off:dst_off ~len ->
           let len = min len _minor in
           let buf = Bytes.create len in
           try
@@ -152,12 +152,17 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let rec go () =
       match Runtime.next_read_operation t.conn with
       | `Read ->
-          let f =
+          let fn =
+            Log.debug (fun m -> m "+reader");
             match recv t.flow t.buffer with
-            | `Eof -> Runtime.read_eof t.conn
-            | `Ok _ -> Runtime.read t.conn
+            | `Eof ->
+                Log.debug (fun m -> m "+reader eof");
+                Runtime.read_eof t.conn
+            | `Ok len ->
+                Log.debug (fun m -> m "+reader %d byte(s)" len);
+                Runtime.read t.conn
           in
-          let _ = Buffer.get t.buffer ~f in
+          let _ = Buffer.get t.buffer ~fn in
           go ()
       | `Yield ->
           let k () = Queue.push go t.tasks in
@@ -198,18 +203,25 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let tasks = Queue.create () in
     let runner () =
       let rec go orphans =
+        Miou.yield ();
+        Log.debug (fun m -> m "%d task(s)" (Miou.length orphans));
         let seq = Queue.to_seq tasks in
         let lst = List.of_seq seq in
         Queue.clear tasks;
-        Log.debug (fun m -> m "+%d task(s)" (List.length lst));
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
         match Miou.care orphans with
-        | None -> if (not !s_reader) || not !s_writer then go orphans
+        | None ->
+            if (not !s_reader) || not !s_writer then begin
+              Miou.yield (); go orphans
+            end
+            else Log.debug (fun m -> m "runner finished")
         | Some None -> Miou.yield (); go orphans
         | Some (Some prm) -> begin
             match Miou.await prm with
             | Ok () -> go orphans
             | Error exn ->
+                Log.err (fun m ->
+                    m "Got an exception: %S" (Printexc.to_string exn));
                 Runtime.report_exn conn exn;
                 go orphans
           end
