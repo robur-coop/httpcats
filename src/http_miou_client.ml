@@ -64,9 +64,9 @@ let pp_error ppf = function
   | `Protocol msg -> Fmt.string ppf msg
   | `Exn exn -> Fmt.pf ppf "%S" (Printexc.to_string exn)
 
-type ('resp, 'body) version =
-  | V1 : (H1.Response.t, H1.Body.Writer.t) version
-  | V2 : (H2.Response.t, H2.Body.Writer.t) version
+type ('conn, 'resp, 'body) version =
+  | V1 : (H1.Client_connection.t, H1.Response.t, H1.Body.Writer.t) version
+  | V2 : (H2.Client_connection.t, H2.Response.t, H2.Body.Writer.t) version
 
 exception Error of error
 
@@ -74,10 +74,11 @@ let empty = Printexc.get_callstack 0
 
 type 'acc process =
   | Process : {
-        version: ('resp, 'body) version
+        version: ('conn, 'resp, 'body) version
       ; acc: 'acc ref
       ; response: 'resp Miou.Computation.t
       ; body: 'body
+      ; conn: 'conn
       ; process: unit Miou.t
     }
       -> 'acc process
@@ -98,9 +99,12 @@ let http_1_1_response_handler ~f acc =
   (response_handler, response, acc)
 
 let http_1_1_error_handler response err =
-  let err =
-    match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
+  let fn = function
+    | `Exn (Runtime.Flow msg) -> `Protocol msg
+    | err -> `V1 err
   in
+  let err = fn err in
+  Log.err (fun m -> m "%a" pp_error err);
   ignore (Miou.Computation.try_cancel response (Error err, empty))
 
 let h2_response_handler conn ~f response acc =
@@ -120,9 +124,12 @@ let h2_response_handler conn ~f response acc =
   (response_handler, acc)
 
 let h2_error_handler response err =
-  let err =
-    match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V2 err
+  let fn = function
+    | `Exn (Runtime.Flow msg) -> `Protocol msg
+    | err -> `V2 err
   in
+  let err = fn err in
+  Log.err (fun m -> m "%a" pp_error err);
   ignore (Miou.Computation.try_cancel response (Error err, empty))
 
 let pp_request ppf (flow, request) =
@@ -144,7 +151,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let prm = A.run conn ~read_buffer_size flow in
-      Process { version= V1; acc; response; body; process= prm }
+      Process { version= V1; acc; response; body; conn; process= prm }
   | `Tcp flow, `V1 config, `V1 request ->
       let read_buffer_size = config.H1.Config.read_buffer_size in
       let response_handler, response, acc = http_1_1_response_handler ~f acc in
@@ -154,7 +161,7 @@ let run ~f acc config flow request =
           ~response_handler
       in
       let prm = B.run conn ~read_buffer_size flow in
-      Process { version= V1; acc; response; body; process= prm }
+      Process { version= V1; acc; response; body; conn; process= prm }
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
@@ -166,7 +173,7 @@ let run ~f acc config flow request =
           request
       in
       let prm = C.run conn ~read_buffer_size flow in
-      Process { version= V2; acc; response; body; process= prm }
+      Process { version= V2; acc; response; body; conn; process= prm }
   | `Tcp flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
@@ -174,9 +181,9 @@ let run ~f acc config flow request =
       let conn = H2.Client_connection.create ~config ~error_handler () in
       let response_handler, acc = h2_response_handler conn ~f response acc in
       let body =
-        H2.Client_connection.request conn ~error_handler ~response_handler
-          request
+        H2.Client_connection.request ~flush_headers_immediately:true conn
+          ~error_handler ~response_handler request
       in
       let prm = D.run conn ~read_buffer_size flow in
-      Process { version= V2; acc; response; body; process= prm }
+      Process { version= V2; acc; response; body; conn; process= prm }
   | _ -> invalid_arg "Http_miou_client.run"

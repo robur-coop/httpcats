@@ -137,11 +137,24 @@ type body = String of string | Stream of string Seq.t
 type meta = (Ipaddr.t * int) * Tls.Core.epoch_data option
 type 'a handler = meta -> response -> 'a -> string option -> 'a
 
-let prep_http_1_1_headers hdr host user_pass body =
-  let hdr = H1.Headers.of_list hdr in
+type config = {
+    meth: H2.Method.t
+  ; headers: (string * string) list
+  ; body: body option
+  ; scheme: string
+  ; user_pass: (string * string option) option
+  ; host: string
+  ; path: string
+  ; ipaddr: Ipaddr.t
+  ; port: int
+  ; epoch: Tls.Core.epoch_data option
+}
+
+let prep_http_1_1_headers cfg body =
+  let hdr = H1.Headers.of_list cfg.headers in
   let add = H1.Headers.add_unless_exists in
   let hdr = add hdr "user-agent" user_agent in
-  let hdr = add hdr "host" host in
+  let hdr = add hdr "host" cfg.host in
   let hdr =
     match body with
     | Some (Some len) ->
@@ -152,20 +165,21 @@ let prep_http_1_1_headers hdr host user_pass body =
         let hdr = add hdr "connection" "close" in
         add hdr "content-length" "0"
   in
-  add_authentication ~add hdr user_pass
+  add_authentication ~add hdr cfg.user_pass
 
-let prep_h2_headers hdr (host : string) user_pass =
+let prep_h2_headers cfg body =
   (* please note, that h2 (at least in version 0.10.0) encodes the headers
      in reverse order ; and for http/2 compatibility we need to retain the
      :authority pseudo-header first (after method/scheme/... that are encoded
      specially *)
   (* also note that "host" is no longer a thing, but :authority is -- so if
      we find a host header, we'll rephrase that as authority. *)
-  let hdr = List.rev_map (fun (k, v) -> (String.lowercase_ascii k, v)) hdr in
+  let fn (k, v) = (String.lowercase_ascii k, v) in
+  let hdr = List.rev_map fn cfg.headers in
   let hdr = H2.Headers.of_rev_list hdr in
   let hdr, authority =
     match (H2.Headers.get hdr "host", H2.Headers.get hdr ":authority") with
-    | None, None -> (hdr, host)
+    | None, None -> (hdr, cfg.host)
     | Some h, None -> (H2.Headers.remove hdr "host", h)
     | None, Some a -> (H2.Headers.remove hdr ":authority", a)
     | Some h, Some a ->
@@ -177,9 +191,18 @@ let prep_h2_headers hdr (host : string) user_pass =
   in
   let add hdr = H2.Headers.add_unless_exists hdr ?sensitive:None in
   let hdr = H2.Headers.add_list H2.Headers.empty (H2.Headers.to_rev_list hdr) in
+  let hdr =
+    match body with
+    | Some (Some len) -> add hdr "content-length" (string_of_int len)
+    | Some None -> add hdr "transfer-encoding" "chunked"
+    | None -> add hdr "content-length" "0"
+  in
   let hdr = add hdr ":authority" authority in
   let hdr = add hdr "user-agent" user_agent in
-  add_authentication ~add hdr user_pass
+  let hdr = add_authentication ~add hdr cfg.user_pass in
+  let hdr = H2.Headers.to_list hdr in
+  let hdr = List.sort (fun (a, _) (b, _) -> String.compare a b) hdr in
+  H2.Headers.of_list hdr
 
 let from_h1 response =
   {
@@ -207,18 +230,15 @@ let _is_a_valid_redirection resp ~uri =
     | None -> false
   else false
 
-type config = {
-    meth: H2.Method.t
-  ; headers: (string * string) list
-  ; body: body option
-  ; scheme: string
-  ; user_pass: (string * string option) option
-  ; host: string
-  ; path: string
-  ; ipaddr: Ipaddr.t
-  ; port: int
-  ; epoch: Tls.Core.epoch_data option
-}
+let http_1_1_writer body seq () =
+  let rec next seq =
+    match Seq.uncons seq with
+    | None -> H1.Body.Writer.close body
+    | Some (str, seq) ->
+        H1.Body.Writer.write_string body str;
+        H1.Body.Writer.flush body (fun () -> next seq)
+  in
+  next seq
 
 let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
     cfg ~f:fn acc =
@@ -228,13 +248,12 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
     | Some (Stream _) -> Some None
     | None -> None
   in
-  let hdrs =
-    prep_http_1_1_headers cfg.headers cfg.host cfg.user_pass contents_length
-  in
-  let request = H1.Request.create ~headers:hdrs cfg.meth cfg.path in
-  let f (`V1 response : Client.response) acc str =
-    let resp = from_h1 response in
-    fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp acc (Some str)
+  let headers = prep_http_1_1_headers cfg contents_length in
+  let meth = cfg.meth and path = cfg.path in
+  let request = H1.Request.create ~headers meth path in
+  let meta = ((cfg.ipaddr, cfg.port), cfg.epoch) in
+  let f (`V1 resp : Client.response) acc str =
+    fn meta (from_h1 resp) acc (Some str)
   in
   let finally () =
     match flow with
@@ -242,7 +261,7 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
     | `Tcp flow -> Http_miou_unix.TCP.close flow
   in
   Fun.protect ~finally @@ fun () ->
-  let (Client.Process { version= V1; acc; response; body; process }) =
+  let (Client.Process { version= V1; acc; response; body; process; _ }) =
     Client.run ~f acc (`V1 config) flow (`V1 request)
   in
   let seq =
@@ -251,38 +270,50 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
     | Some (Stream seq) -> seq
     | None -> Seq.empty
   in
-  let go () =
-    let rec next seq =
-      match Seq.uncons seq with
-      | None -> H1.Body.Writer.close body
-      | Some (str, seq) ->
-          H1.Body.Writer.write_string body str;
-          H1.Body.Writer.flush body (fun () -> next seq)
-    in
-    next seq
+  let sender = Miou.async (http_1_1_writer body seq) in
+  let on_error exn =
+    Miou.cancel process;
+    Miou.cancel sender;
+    match exn with Client.Error err -> err | exn -> `Exn exn
   in
-  let sender = Miou.async go in
-  let on_error = function Client.Error err -> err | exn -> `Exn exn in
   let ( let* ) = Result.bind in
+  let resp = Miou.Computation.await response in
+  let* resp = Result.map_error (on_error % fst) resp in
   let* () = Result.map_error on_error (Miou.await sender) in
   let* () = Result.map_error on_error (Miou.await process) in
-  let* resp =
-    Result.map_error (on_error % fst) (Miou.Computation.await response)
-  in
   let resp = from_h1 resp in
-  Ok (resp, fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp !acc None)
+  Ok (resp, fn meta resp !acc None)
+
+let h2_writer body seq () =
+  let rec next seq reason =
+    match reason with
+    | `Closed -> H2.Body.Writer.close body
+    | `Written -> begin
+        match Seq.uncons seq with
+        | None -> H2.Body.Writer.close body
+        | Some (str, seq) ->
+            H2.Body.Writer.write_string body str;
+            H2.Body.Writer.flush body (fun reason -> next seq reason)
+      end
+  in
+  next seq `Written
 
 let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
     ~f:fn acc =
-  let hdrs = prep_h2_headers cfg.headers cfg.host cfg.user_pass in
-  Log.debug (fun m -> m "h2 headers: @[<hov>%a@]" H2.Headers.pp_hum hdrs);
-  let request =
-    H2.Request.create ~scheme:cfg.scheme ~headers:hdrs cfg.meth cfg.path
+  let contents_length =
+    match cfg.body with
+    | Some (String str) -> Some (Some (String.length str))
+    | Some (Stream _) -> Some None
+    | None -> None
   in
+  let headers = prep_h2_headers cfg contents_length in
+  let scheme = cfg.scheme and meth = cfg.meth and path = cfg.path in
+  let request = H2.Request.create ~scheme ~headers meth path in
+  let meta = ((cfg.ipaddr, cfg.port), cfg.epoch) in
   let f (`V2 response : Client.response) acc str =
-    fn ((cfg.ipaddr, cfg.port), cfg.epoch) (from_h2 response) acc (Some str)
+    fn meta (from_h2 response) acc (Some str)
   in
-  let (Client.Process { version= V2; acc; response; body; process }) =
+  let (Client.Process { version= V2; acc; response; body; process; _ }) =
     Client.run ~f acc (`V2 config) flow (`V2 request)
   in
   let seq =
@@ -291,29 +322,19 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
     | Some (Stream seq) -> seq
     | None -> Seq.empty
   in
-  let go () =
-    let rec next seq reason =
-      match reason with
-      | `Closed -> H2.Body.Writer.close body
-      | `Written -> (
-          match Seq.uncons seq with
-          | None -> H2.Body.Writer.close body
-          | Some (str, seq) ->
-              H2.Body.Writer.write_string body str;
-              H2.Body.Writer.flush body (fun reason -> next seq reason))
-    in
-    next seq `Written
+  let sender = Miou.async (h2_writer body seq) in
+  let on_error exn =
+    Miou.cancel process;
+    Miou.cancel sender;
+    match exn with Client.Error err -> err | exn -> `Exn exn
   in
-  let sender = Miou.async go in
-  let on_error = function Client.Error err -> err | exn -> `Exn exn in
   let ( let* ) = Result.bind in
+  let resp = Miou.Computation.await response in
+  let* resp = Result.map_error (on_error % fst) resp in
   let* () = Result.map_error on_error (Miou.await sender) in
   let* () = Result.map_error on_error (Miou.await process) in
-  let* resp =
-    Result.map_error (on_error % fst) (Miou.Computation.await response)
-  in
   let resp = from_h2 resp in
-  Ok (resp, fn ((cfg.ipaddr, cfg.port), cfg.epoch) resp !acc None)
+  Ok (resp, fn meta resp !acc None)
 
 let alpn_protocol = function
   | `Tcp _ -> None
@@ -553,17 +574,25 @@ let[@inline always] request ?config ?tls_config ?authenticator ?(meth = `GET)
     ~follow_redirect ~resolver ~f ~uri acc
   |> open_error
 
-let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~uri ?body
-    headers =
+let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~meth ~uri
+    ?body headers =
   let ( let+ ) x f = Result.map f x in
-  let+ _tls, _scheme, user_pass, host, _port, _path = decode_uri uri in
+  let+ tls, scheme, user_pass, host, port, path = decode_uri uri in
+  let ipaddr = Ipaddr.of_string_exn "0.0.0.0" in
+  let port =
+    match port with Some port -> port | None -> if tls then 443 else 80
+  in
+  let epoch = None in
+  let cfg =
+    { headers; meth; body; scheme; user_pass; host; path; ipaddr; port; epoch }
+  in
+  let contents_length =
+    match body with
+    | Some (String str) -> Some (Some (String.length str))
+    | Some (Stream _) -> Some None
+    | None -> None
+  in
   match version with
   | `HTTP_1_1 _ ->
-      let blen =
-        match body with
-        | Some (String str) -> Some (Some (String.length str))
-        | Some (Stream _) -> Some None
-        | None -> None
-      in
-      H1.Headers.to_list (prep_http_1_1_headers headers host user_pass blen)
-  | `H2 _ -> H2.Headers.to_list (prep_h2_headers headers host user_pass)
+      H1.Headers.to_list (prep_http_1_1_headers cfg contents_length)
+  | `H2 _ -> H2.Headers.to_list (prep_h2_headers cfg contents_length)
