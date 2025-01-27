@@ -565,6 +565,56 @@ let test05 =
       Happy_eyeballs_miou_unix.kill daemon;
       Alcotest.failf "Unexpected result"
 
+let test06 =
+  let open Rresult in
+  Alcotest.test_case "error with h2" `Quick @@ fun () ->
+  Miou_unix.run ~domains @@ fun () ->
+  let handler _ = function
+    | `V2 reqd ->
+        let open H2 in
+        let body = "Hello World!" in
+        let headers =
+          Headers.of_list
+            [
+              ("content-type", "text/plain")
+            ; ("content-length", string_of_int (String.length body))
+            ]
+        in
+        let resp = Response.create ~headers `OK in
+        Reqd.respond_with_string reqd resp body
+    | `V1 _ -> assert false
+  in
+  let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
+  let daemon, resolver = Happy_eyeballs_miou_unix.create () in
+  let request =
+    Miou.async @@ fun () ->
+    Httpcats.request ~resolver:(`Happy resolver) ~authenticator
+      ~f:(fun _ _resp buf -> function
+        | Some str -> Buffer.add_string buf str; buf | None -> buf)
+      ~headers:
+        [
+          ("transfer-encoding", "chunked"); ("accept-encoding", "identity")
+        ; ("connection", "close")
+        ]
+      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
+    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+  in
+  match Miou.await request with
+  | Error exn ->
+      Httpcats.Server.switch stop;
+      Miou.await_exn prm;
+      Happy_eyeballs_miou_unix.kill daemon;
+      Alcotest.failf "Unexpected exception: %S" (Printexc.to_string exn)
+  | Ok (Error _) ->
+      Httpcats.Server.switch stop;
+      Miou.await_exn prm;
+      Happy_eyeballs_miou_unix.kill daemon
+  | Ok (Ok (_, buf)) ->
+      Httpcats.Server.switch stop;
+      Miou.await_exn prm;
+      Happy_eyeballs_miou_unix.kill daemon;
+      Alcotest.failf "Unexpected result: %S" (Buffer.contents buf)
+
 let () =
   let stdout = Alcotest_engine.Formatters.make_stdout () in
   let stderr = Alcotest_engine.Formatters.make_stderr () in
@@ -573,5 +623,5 @@ let () =
   Alcotest.run ~stdout ~stderr "network"
     [
       ("clear", [ test00; test01; test02 ])
-    ; ("with-tls", [ test03; test04; test05 ])
+    ; ("with-tls", [ test03; test04; test05 ]); ("error", [ test06 ])
     ]
