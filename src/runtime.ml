@@ -1,6 +1,8 @@
 let src = Logs.Src.create "runtime"
 let _minor = (Sys.word_size / 8 * 256) - 1
 
+external reraise : exn -> 'a = "%reraise"
+
 module Log = (val Logs.src_log src : Logs.LOG)
 
 module type S = sig
@@ -101,6 +103,11 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   type conn = Runtime.t
   type flow = Flow.t
 
+  let shutdown flow cmd =
+    try Flow.shutdown flow cmd
+    with exn ->
+      Log.err (fun m -> m "error when we shutdown: %S" (Printexc.to_string exn))
+
   let recv flow buffer =
     let bytes_read =
       Buffer.put buffer ~fn:(fun bstr ~off:dst_off ~len ->
@@ -110,7 +117,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             let len' = Flow.read flow buf ~off:0 ~len in
             Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len:len';
             len'
-          with exn -> Flow.close flow; raise exn)
+          with exn -> Flow.close flow; reraise exn)
     in
     if bytes_read = 0 then `Eof else `Ok bytes_read
 
@@ -134,11 +141,6 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     with
     | Closed_by_peer -> `Closed
     | _exn -> Flow.close flow; `Closed
-
-  let shutdown flow cmd =
-    try Flow.shutdown flow cmd
-    with exn ->
-      Log.err (fun m -> m "error when we shutdown: %S" (Printexc.to_string exn))
 
   type t = {
       conn: Runtime.t
@@ -169,7 +171,6 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           Log.debug (fun m -> m "+reader yield");
           Runtime.yield_reader t.conn k
       | `Close ->
-          Log.debug (fun m -> m "+reader closed");
           shutdown t.flow `read;
           t.stop := true
       | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
@@ -203,25 +204,20 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let tasks = Queue.create () in
     let runner () =
       let rec go orphans =
-        Miou.yield ();
-        Log.debug (fun m -> m "%d task(s)" (Miou.length orphans));
         let seq = Queue.to_seq tasks in
         let lst = List.of_seq seq in
         Queue.clear tasks;
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
         match Miou.care orphans with
         | None ->
-            if (not !s_reader) || not !s_writer then begin
+            if (not !s_reader) && not !s_writer then begin
               Miou.yield (); go orphans
             end
-            else Log.debug (fun m -> m "runner finished")
         | Some None -> Miou.yield (); go orphans
         | Some (Some prm) -> begin
             match Miou.await prm with
             | Ok () -> go orphans
             | Error exn ->
-                Log.err (fun m ->
-                    m "Got an exception: %S" (Printexc.to_string exn));
                 Runtime.report_exn conn exn;
                 go orphans
           end
