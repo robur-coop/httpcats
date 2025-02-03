@@ -109,16 +109,19 @@ let[@warning "-8"] handler _
       let resp = Response.create ~headers `Not_found in
       Reqd.respond_with_string reqd resp ""
 
-let server sockaddr = Httpcats.Server.clear ~handler sockaddr
+let server stop sockaddr = Httpcats.Server.clear ~stop ~handler sockaddr
 let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
 
 let () =
   let addr = sockaddr_of_arguments () in
   let () = Printexc.record_backtrace true in
   Miou_unix.run @@ fun () ->
+  let stop = Httpcats.Server.stop () in
+  let fn _sigint = Httpcats.Server.switch stop in
+  ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle (fn)));
   let domains = Miou.Domain.available () in
-  let prm = Miou.async @@ fun () -> server addr in
+  let prm = Miou.async @@ fun () -> server stop addr in
   if domains > 0 then
-    Miou.parallel server (List.init domains (Fun.const addr))
+    Miou.parallel (server stop) (List.init domains (Fun.const addr))
     |> List.iter (function Ok () -> () | Error exn -> raise exn);
   Miou.await_exn prm
