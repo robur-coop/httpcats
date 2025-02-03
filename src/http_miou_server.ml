@@ -91,10 +91,17 @@ let default_error_handler ?request:_ err respond =
   match respond hdrs with
   | `V1 body ->
       H1.Body.Writer.write_string body str;
-      H1.Body.Writer.close body
+      let fn () =
+        if not (H1.Body.Writer.is_closed body) then H1.Body.Writer.close body
+      in
+      H1.Body.Writer.flush body fn
   | `V2 body ->
+      Log.debug (fun m -> m "write %S" str);
       H2.Body.Writer.write_string body str;
-      H2.Body.Writer.close body
+      let fn state =
+        match state with `Closed -> () | `Written -> H2.Body.Writer.close body
+      in
+      H2.Body.Writer.flush body fn
 
 let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     flow =

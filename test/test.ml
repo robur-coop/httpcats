@@ -20,8 +20,7 @@ let reporter ppf =
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
-
-(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
+let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 let domains = 3
@@ -99,6 +98,7 @@ let secure_server ~seed ?(port = 8080) handler =
   let cert, pk, authenticator =
     Rresult.R.failwith_error_msg (Ca.make "http.cats" seed)
   in
+  let error_handler ?request:_ _err _respond = () in
   let prm =
     Miou.async @@ fun () ->
     let sockaddr = Unix.ADDR_INET (Unix.inet_addr_loopback, port) in
@@ -108,13 +108,16 @@ let secure_server ~seed ?(port = 8080) handler =
         ~alpn_protocols:[ "h2"; "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.Server.with_tls ~stop cfg ~handler sockaddr
+    Httpcats.Server.with_tls ~stop cfg ~handler ~error_handler sockaddr
   in
   (stop, prm, authenticator)
 
 let test00 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
+  Fun.protect ~finally @@ fun () ->
   let handler _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
@@ -259,6 +262,9 @@ let fold_h2 ~finally ~f acc body =
 let test02 =
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
+  Fun.protect ~finally @@ fun () ->
   let handler _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
@@ -314,6 +320,9 @@ let test03 =
   let open Rresult in
   let ( let* ) = Result.bind in
   Miou_unix.run ~domains @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
+  Fun.protect ~finally @@ fun () ->
   let handler _ = function
     | `V2 reqd ->
         let open H2 in
@@ -389,6 +398,9 @@ let test04 =
   let open Rresult in
   Alcotest.test_case "stream" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
+  Fun.protect ~finally @@ fun () ->
   let g0 = Random.State.make_self_init () in
   let g1 = Random.State.copy g0 in
   let g2 = Random.State.copy g0 in
@@ -486,6 +498,9 @@ let test05 =
   let open Rresult in
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
+  Fun.protect ~finally @@ fun () ->
   let handler _ = function
     | `V2 reqd ->
         let open H2 in
@@ -569,6 +584,9 @@ let test06 =
   let open Rresult in
   Alcotest.test_case "error with h2" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
+  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
+  Fun.protect ~finally @@ fun () ->
   let handler _ = function
     | `V2 reqd ->
         let open H2 in
@@ -619,7 +637,6 @@ let () =
   let stdout = Alcotest_engine.Formatters.make_stdout () in
   let stderr = Alcotest_engine.Formatters.make_stderr () in
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  Mirage_crypto_rng_unix.initialize (module Mirage_crypto_rng.Fortuna);
   Alcotest.run ~stdout ~stderr "network"
     [
       ("clear", [ test00; test01; test02 ])

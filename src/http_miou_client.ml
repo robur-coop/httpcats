@@ -87,7 +87,7 @@ let http_1_1_response_handler ~f acc =
   let acc = ref acc in
   let response = Miou.Computation.create () in
   let response_handler resp body =
-    ignore (Miou.Computation.try_return response resp);
+    let _set = Miou.Computation.try_return response resp in
     let rec on_eof () = H1.Body.Reader.close body
     and on_read bstr ~off ~len =
       let str = Bigstringaf.substring bstr ~off ~len in
@@ -104,13 +104,13 @@ let http_1_1_error_handler response err =
     | err -> `V1 err
   in
   let err = fn err in
-  Log.err (fun m -> m "%a" pp_error err);
-  ignore (Miou.Computation.try_cancel response (Error err, empty))
+  let _set = Miou.Computation.try_cancel response (Error err, empty) in
+  Log.err (fun m -> m "%a" pp_error err)
 
 let h2_response_handler conn ~f response acc =
   let acc = ref acc in
   let response_handler resp body =
-    ignore (Miou.Computation.try_return response resp);
+    let _set = Miou.Computation.try_return response resp in
     let rec on_eof () =
       H2.Body.Reader.close body;
       H2.Client_connection.shutdown conn
@@ -129,8 +129,8 @@ let h2_error_handler response err =
     | err -> `V2 err
   in
   let err = fn err in
-  Log.err (fun m -> m "%a" pp_error err);
-  ignore (Miou.Computation.try_cancel response (Error err, empty))
+  let _set = Miou.Computation.try_cancel response (Error err, empty) in
+  Log.err (fun m -> m "%a" pp_error err)
 
 let pp_request ppf (flow, request) =
   match (flow, request) with
