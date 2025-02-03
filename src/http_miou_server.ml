@@ -42,7 +42,7 @@ let pp_error ppf = function
   | `V1 `Internal_server_error | `V2 `Internal_server_error ->
       Fmt.string ppf "Internal server error"
   | `V1 (`Exn exn) | `V2 (`Exn exn) ->
-      Fmt.pf ppf "Got an unexpected exception: %S" (Printexc.to_string exn)
+      Fmt.pf ppf "Unknown exception: %s" (Printexc.to_string exn)
   | `V2 `Bad_request -> Fmt.string ppf "Bad H2 request"
   | `Protocol msg -> Fmt.string ppf msg
 
@@ -75,7 +75,33 @@ let request_from_H1 ~scheme { H1.Request.meth; target; headers; _ } =
 let request_from_h2 { H2.Request.meth; target; scheme; headers } =
   { meth; target; scheme; headers }
 
-let default_error_handler ?request:_ _err _respond = ()
+let default_error_handler ?request:_ err respond =
+  let str =
+    Fmt.str {html|<h1>500 Internal server error</h1><p>Error: %a</p>|html}
+      pp_error err
+  in
+  let hdrs =
+    [
+      ("content-type", "text/html; charset=utf-8")
+    ; ("content-length", string_of_int (String.length str))
+    ; ("connection", "close")
+    ]
+  in
+  let hdrs = Headers.of_list hdrs in
+  match respond hdrs with
+  | `V1 body ->
+      H1.Body.Writer.write_string body str;
+      let fn () =
+        if not (H1.Body.Writer.is_closed body) then H1.Body.Writer.close body
+      in
+      H1.Body.Writer.flush body fn
+  | `V2 body ->
+      Log.debug (fun m -> m "write %S" str);
+      H2.Body.Writer.write_string body str;
+      let fn state =
+        match state with `Closed -> () | `Written -> H2.Body.Writer.close body
+      in
+      H2.Body.Writer.flush body fn
 
 let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     flow =
