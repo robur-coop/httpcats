@@ -118,7 +118,7 @@ let () =
   Miou_unix.run @@ fun () ->
   let stop = Httpcats.Server.stop () in
   let fn _sigint = Httpcats.Server.switch stop in
-  ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle (fn)));
+  ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle fn));
   let domains = Miou.Domain.available () in
   let prm = Miou.async @@ fun () -> server stop addr in
   if domains > 0 then

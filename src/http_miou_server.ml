@@ -76,13 +76,17 @@ let request_from_h2 { H2.Request.meth; target; scheme; headers } =
   { meth; target; scheme; headers }
 
 let default_error_handler ?request:_ err respond =
-  let str = Fmt.str
-    {html|<h1>500 Internal server error</h1><p>Error: %a</p>|html}
-    pp_error err in
+  let str =
+    Fmt.str {html|<h1>500 Internal server error</h1><p>Error: %a</p>|html}
+      pp_error err
+  in
   let hdrs =
-    [ "content-type", "text/html; charset=utf-8"
-    ; "content-length", string_of_int (String.length str)
-    ; "connection", "close" ] in
+    [
+      ("content-type", "text/html; charset=utf-8")
+    ; ("content-length", string_of_int (String.length str))
+    ; ("connection", "close")
+    ]
+  in
   let hdrs = Headers.of_list hdrs in
   match respond hdrs with
   | `V1 body ->
