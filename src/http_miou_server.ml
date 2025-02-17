@@ -63,7 +63,9 @@ type request = {
 type response = { status: Status.t; headers: Headers.t }
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
-type error_handler = ?request:request -> error -> (Headers.t -> body) -> unit
+
+type error_handler =
+  [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
 
 type handler =
   [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
@@ -75,32 +77,42 @@ let request_from_H1 ~scheme { H1.Request.meth; target; headers; _ } =
 let request_from_h2 { H2.Request.meth; target; scheme; headers } =
   { meth; target; scheme; headers }
 
-let default_error_handler ?request:_ err respond =
-  let str =
-    Fmt.str {html|<h1>500 Internal server error</h1><p>Error: %a</p>|html}
-      pp_error err
-  in
+let errf = Fmt.str "<h1>500 Internal server error</h1><p>Error: %a</p>" pp_error
+
+let default_error_handler version ?request:_ err respond =
+  let str = errf err in
   let hdrs =
-    [
-      ("content-type", "text/html; charset=utf-8")
-    ; ("content-length", string_of_int (String.length str))
-    ; ("connection", "close")
-    ]
+    match version with
+    | `V1 ->
+        [
+          ("content-type", "text/html; charset=utf-8")
+        ; ("content-length", string_of_int (String.length str))
+        ; ("connection", "close")
+        ]
+    | `V2 ->
+        [
+          ("content-type", "text/html; charset=utf-8")
+        ; ("content-length", string_of_int (String.length str))
+        ]
   in
-  let hdrs = Headers.of_list hdrs in
+  let hdrs = H2.Headers.of_list hdrs in
   match respond hdrs with
   | `V1 body ->
       H1.Body.Writer.write_string body str;
       let fn () =
-        if not (H1.Body.Writer.is_closed body) then H1.Body.Writer.close body
+        if H1.Body.Writer.is_closed body = false then H1.Body.Writer.close body
       in
       H1.Body.Writer.flush body fn
   | `V2 body ->
-      Log.debug (fun m -> m "write %S" str);
+      Log.debug (fun m -> m "respond with a h2 error");
       H2.Body.Writer.write_string body str;
-      let fn state =
-        match state with `Closed -> () | `Written -> H2.Body.Writer.close body
+      let fn = function
+        | `Closed -> ()
+        | `Written ->
+            Log.debug (fun m -> m "close the h2 body");
+            H2.Body.Writer.close body
       in
+      Log.debug (fun m -> m "flush the errored h2 response");
       H2.Body.Writer.flush body fn
 
 let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
@@ -117,7 +129,7 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
       let body = respond hdrs in
       `V1 body
     in
-    user's_error_handler ?request err respond
+    user's_error_handler `V1 ?request err respond
   in
   let request_handler reqd = user's_handler (`Tcp flow) (`V1 reqd) in
   let conn =
@@ -144,7 +156,7 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
       let body = respond hdrs in
       `V1 body
     in
-    user's_error_handler ?request err respond
+    user's_error_handler `V1 ?request err respond
   in
   let request_handler reqd = user's_handler (`Tls flow) (`V1 reqd) in
   let conn =
@@ -160,7 +172,7 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
       match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V2 err
     in
     let respond hdrs = `V2 (respond hdrs) in
-    user's_error_handler ?request err respond
+    user's_error_handler `V2 ?request err respond
   in
   let request_handler reqd = user's_handler (`Tls flow) (`V2 reqd) in
   let conn =

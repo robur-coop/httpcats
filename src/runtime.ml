@@ -23,6 +23,7 @@ module type S = sig
   val report_write_result : t -> [ `Ok of int | `Closed ] -> unit
   val yield_writer : t -> (unit -> unit) -> unit
   val report_exn : t -> exn -> unit
+  val is_closed : t -> bool
 end
 
 module Buffer : sig
@@ -154,8 +155,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let rec go () =
       match Runtime.next_read_operation t.conn with
       | `Read ->
+          Log.debug (fun m -> m "+reader");
           let fn =
-            Log.debug (fun m -> m "+reader");
             match recv t.flow t.buffer with
             | `Eof ->
                 Log.debug (fun m -> m "+reader eof");
@@ -198,31 +199,45 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     in
     go
 
+  let rec terminate conn orphans =
+    match Miou.care orphans with
+    | None -> Log.debug (fun m -> m "runtime task is done")
+    | Some None -> Miou.yield (); terminate conn orphans
+    | Some (Some prm) -> begin
+        match Miou.await prm with
+        | Ok () -> terminate conn orphans
+        | Error exn ->
+            let () = try Runtime.report_exn conn exn with _ -> () in
+            terminate conn orphans
+      end
+
+  let rec clean conn orphans =
+    match Miou.care orphans with
+    | Some None | None -> Miou.yield ()
+    | Some (Some prm) -> begin
+        match Miou.await prm with
+        | Ok () -> clean conn orphans
+        | Error exn ->
+            let () = try Runtime.report_exn conn exn with _ -> () in
+            clean conn orphans
+      end
+
   let run conn ?(read_buffer_size = _minor) flow =
     let buffer = Buffer.create read_buffer_size in
     let s_reader = ref false and s_writer = ref false in
     let tasks = Queue.create () in
     let runner () =
       let rec go orphans =
+        clean conn orphans;
         let seq = Queue.to_seq tasks in
         let lst = List.of_seq seq in
         Queue.clear tasks;
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
-        match Miou.care orphans with
-        | None ->
-            if (not !s_reader) && not !s_writer then begin
-              Miou.yield (); go orphans
-            end
-        | Some None -> Miou.yield (); go orphans
-        | Some (Some prm) -> begin
-            match Miou.await prm with
-            | Ok () -> go orphans
-            | Error exn ->
-                Runtime.report_exn conn exn;
-                go orphans
-          end
+        if Runtime.is_closed conn = false then go orphans
       in
-      go (Miou.orphans ())
+      let orphans = Miou.orphans () in
+      let finally () = terminate conn orphans in
+      Fun.protect ~finally @@ fun () -> go orphans
     in
     let rd = reader { conn; flow; tasks; buffer; stop= s_reader } in
     let wr = writer { conn; flow; tasks; buffer; stop= s_writer } in

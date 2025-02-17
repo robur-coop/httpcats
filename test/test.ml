@@ -20,7 +20,8 @@ let reporter ppf =
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
-let () = Logs.set_level ~all:true (Some Logs.Debug)
+
+(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 let domains = 3
@@ -98,7 +99,6 @@ let secure_server ~seed ?(port = 8080) handler =
   let cert, pk, authenticator =
     Rresult.R.failwith_error_msg (Ca.make "http.cats" seed)
   in
-  let error_handler ?request:_ _err _respond = () in
   let prm =
     Miou.async @@ fun () ->
     let sockaddr = Unix.ADDR_INET (Unix.inet_addr_loopback, port) in
@@ -108,7 +108,7 @@ let secure_server ~seed ?(port = 8080) handler =
         ~alpn_protocols:[ "h2"; "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.Server.with_tls ~stop cfg ~handler ~error_handler sockaddr
+    Httpcats.Server.with_tls ~stop cfg ~handler sockaddr
   in
   (stop, prm, authenticator)
 
@@ -623,15 +623,10 @@ let test06 =
       Miou.await_exn prm;
       Happy_eyeballs_miou_unix.kill daemon;
       Alcotest.failf "Unexpected exception: %S" (Printexc.to_string exn)
-  | Ok (Error _) ->
+  | Ok _ ->
       Httpcats.Server.switch stop;
       Miou.await_exn prm;
       Happy_eyeballs_miou_unix.kill daemon
-  | Ok (Ok (_, buf)) ->
-      Httpcats.Server.switch stop;
-      Miou.await_exn prm;
-      Happy_eyeballs_miou_unix.kill daemon;
-      Alcotest.failf "Unexpected result: %S" (Buffer.contents buf)
 
 let () =
   let stdout = Alcotest_engine.Formatters.make_stdout () in
