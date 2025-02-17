@@ -87,14 +87,14 @@ let http_1_1_response_handler ~f acc =
   let acc = ref acc in
   let response = Miou.Computation.create () in
   let response_handler resp body =
-    let _set = Miou.Computation.try_return response resp in
     let rec on_eof () = H1.Body.Reader.close body
     and on_read bstr ~off ~len =
       let str = Bigstringaf.substring bstr ~off ~len in
       acc := f (`V1 resp) !acc str;
       H1.Body.Reader.schedule_read body ~on_read ~on_eof
     in
-    H1.Body.Reader.schedule_read body ~on_read ~on_eof
+    H1.Body.Reader.schedule_read body ~on_read ~on_eof;
+    ignore (Miou.Computation.try_return response resp)
   in
   (response_handler, response, acc)
 
@@ -110,7 +110,6 @@ let http_1_1_error_handler response err =
 let h2_response_handler conn ~f response acc =
   let acc = ref acc in
   let response_handler resp body =
-    let _set = Miou.Computation.try_return response resp in
     let rec on_eof () =
       H2.Body.Reader.close body;
       H2.Client_connection.shutdown conn
@@ -119,17 +118,19 @@ let h2_response_handler conn ~f response acc =
       acc := f (`V2 resp) !acc str;
       H2.Body.Reader.schedule_read body ~on_read ~on_eof
     in
-    H2.Body.Reader.schedule_read body ~on_read ~on_eof
+    H2.Body.Reader.schedule_read body ~on_read ~on_eof;
+    ignore (Miou.Computation.try_return response resp)
   in
   (response_handler, acc)
 
-let h2_error_handler response err =
+let h2_error_handler conn response err =
   let fn = function
     | `Exn (Runtime.Flow msg) -> `Protocol msg
     | err -> `V2 err
   in
   let err = fn err in
   let _set = Miou.Computation.try_cancel response (Error err, empty) in
+  H2.Client_connection.shutdown (Lazy.force conn);
   Log.err (fun m -> m "%a" pp_error err)
 
 let pp_request ppf (flow, request) =
@@ -165,8 +166,9 @@ let run ~f acc config flow request =
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
-      let error_handler = h2_error_handler response in
-      let conn = H2.Client_connection.create ~config ~error_handler () in
+      let rec error_handler = fun err -> h2_error_handler conn response err
+      and conn = lazy (H2.Client_connection.create ~config ~error_handler ()) in
+      let conn = Lazy.force conn in
       let response_handler, acc = h2_response_handler conn ~f response acc in
       let body =
         H2.Client_connection.request conn ~error_handler ~response_handler
@@ -177,12 +179,13 @@ let run ~f acc config flow request =
   | `Tcp flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
-      let error_handler = h2_error_handler response in
-      let conn = H2.Client_connection.create ~config ~error_handler () in
+      let rec error_handler = fun err -> h2_error_handler conn response err
+      and conn = lazy (H2.Client_connection.create ~config ~error_handler ()) in
+      let conn = Lazy.force conn in
       let response_handler, acc = h2_response_handler conn ~f response acc in
       let body =
-        H2.Client_connection.request ~flush_headers_immediately:true conn
-          ~error_handler ~response_handler request
+        H2.Client_connection.request conn ~error_handler ~response_handler
+          request
       in
       let prm = D.run conn ~read_buffer_size flow in
       Process { version= V2; acc; response; body; conn; process= prm }

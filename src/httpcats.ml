@@ -256,6 +256,7 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
     fn meta (from_h1 resp) acc (Some str)
   in
   let finally () =
+    Log.debug (fun m -> m "close the underlying socket");
     match flow with
     | `Tls flow -> Tls_miou_unix.close flow
     | `Tcp flow -> Http_miou_unix.TCP.close flow
@@ -272,6 +273,7 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
   in
   let sender = Miou.async (http_1_1_writer body seq) in
   let on_error exn =
+    Log.debug (fun m -> m "cancel http/1.1 tasks");
     Miou.cancel process;
     Miou.cancel sender;
     match exn with Client.Error err -> err | exn -> `Exn exn
@@ -324,6 +326,7 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
   in
   let sender = Miou.async (h2_writer body seq) in
   let on_error exn =
+    Log.debug (fun m -> m "cancel h2 tasks");
     Miou.cancel process;
     Miou.cancel sender;
     match exn with Client.Error err -> err | exn -> `Exn exn

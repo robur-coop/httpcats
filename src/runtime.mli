@@ -16,6 +16,7 @@ module type S = sig
   val report_write_result : t -> [ `Ok of int | `Closed ] -> unit
   val yield_writer : t -> (unit -> unit) -> unit
   val report_exn : t -> exn -> unit
+  val is_closed : t -> bool
 end
 
 exception Flow of string
