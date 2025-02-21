@@ -29,7 +29,8 @@ type handler =
   [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
 
 val clear :
-     ?stop:stop
+     ?parallel:bool
+  -> ?stop:stop
   -> ?config:H1.Config.t
   -> ?backlog:int
   -> ?error_handler:error_handler
@@ -38,7 +39,8 @@ val clear :
   -> unit
 
 val with_tls :
-     ?stop:stop
+     ?parallel:bool
+  -> ?stop:stop
   -> ?config:
        [ `Both of H1.Config.t * H2.Config.t
        | `HTTP_1_1 of H1.Config.t

@@ -19,8 +19,6 @@ module type S = sig
   val is_closed : t -> bool
 end
 
-exception Flow of string
-
 module Make (Flow : Flow.S) (Runtime : S) : sig
   type conn = Runtime.t
   type flow = Flow.t

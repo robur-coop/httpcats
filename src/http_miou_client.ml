@@ -99,11 +99,7 @@ let http_1_1_response_handler ~f acc =
   (response_handler, response, acc)
 
 let http_1_1_error_handler response err =
-  let fn = function
-    | `Exn (Runtime.Flow msg) -> `Protocol msg
-    | err -> `V1 err
-  in
-  let err = fn err in
+  let err = `V1 err in
   let _set = Miou.Computation.try_cancel response (Error err, empty) in
   Log.err (fun m -> m "%a" pp_error err)
 
@@ -124,11 +120,7 @@ let h2_response_handler conn ~f response acc =
   (response_handler, acc)
 
 let h2_error_handler conn response err =
-  let fn = function
-    | `Exn (Runtime.Flow msg) -> `Protocol msg
-    | err -> `V2 err
-  in
-  let err = fn err in
+  let err = `V2 err in
   let _set = Miou.Computation.try_cancel response (Error err, empty) in
   H2.Client_connection.shutdown (Lazy.force conn);
   Log.err (fun m -> m "%a" pp_error err)
@@ -166,6 +158,14 @@ let run ~f acc config flow request =
   | `Tls flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
       let response = Miou.Computation.create () in
+      (* NOTE(dinosaure): With regard to [h2], there are two levels of error:
+         one at the protocol level and one at the request level. [httpcats] is
+         currently designed to make only one request, even with [h2]. Thus, if
+         an error occurs at the request level, it means that the connection must
+         be "shutdown" — see [h2_error_handler].
+
+         Here we use the “lazy”/“rec” trick to have the instance of our [conn]
+         connection in our [error_handler] at both levels. *)
       let rec error_handler = fun err -> h2_error_handler conn response err
       and conn = lazy (H2.Client_connection.create ~config ~error_handler ()) in
       let conn = Lazy.force conn in
