@@ -69,8 +69,6 @@ end = struct
     n
 end
 
-exception Flow of string
-
 let rec terminate orphans =
   match Miou.care orphans with
   | None -> Miou.yield ()
@@ -108,6 +106,14 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     try Flow.shutdown flow cmd
     with exn ->
       Log.err (fun m -> m "error when we shutdown: %S" (Printexc.to_string exn))
+  (* TODO(dinosaure): It can happen that we try to shutdown a connection when it
+     is already closed (it all depends on the behavior of the peer). It seems
+     that the closing of a socket between two peers via HTTP is not as
+     standardized as all that. Thus, shutdown can raise an exception (saying
+     that the connection has already been closed by the peer).
+
+     We could check before attempting to shutdown the connection instead of
+     ignoring the exception that may have been raised. *)
 
   let recv flow buffer =
     let bytes_read =
@@ -149,6 +155,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     ; tasks: (unit -> unit) Queue.t
     ; buffer: Buffer.t
     ; stop: bool ref
+    ; lock: Miou.Mutex.t
+    ; cond: Miou.Condition.t
   }
 
   let reader t =
@@ -168,7 +176,11 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           let _ = Buffer.get t.buffer ~fn in
           go ()
       | `Yield ->
-          let k () = Queue.push go t.tasks in
+          let k () =
+            Miou.Mutex.protect t.lock @@ fun () ->
+            Queue.push go t.tasks;
+            Miou.Condition.signal t.cond
+          in
           Log.debug (fun m -> m "+reader yield");
           Runtime.yield_reader t.conn k
       | `Close ->
@@ -176,7 +188,10 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           t.stop := true
       | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
     in
-    go
+    let finally () =
+      Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
+    in
+    fun () -> Fun.protect ~finally go
 
   let writer t =
     let rec go () =
@@ -188,7 +203,11 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           writev t.flow iovecs |> Runtime.report_write_result t.conn;
           go ()
       | `Yield ->
-          let k () = Queue.push go t.tasks in
+          let k () =
+            Miou.Mutex.protect t.lock @@ fun () ->
+            Queue.push go t.tasks;
+            Miou.Condition.signal t.cond
+          in
           Log.debug (fun m -> m "+writer yield");
           Runtime.yield_writer t.conn k
       | `Close _ ->
@@ -197,38 +216,75 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           t.stop := true
       | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
     in
-    go
+    let finally () =
+      Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
+    in
+    fun () -> Fun.protect ~finally go
 
-  let rec terminate conn orphans =
+  (* NOTE(dinosaure): report exception only once. *)
+  let report_exn error conn exn =
+    Log.err (fun m -> m "user's exception: %s" (Printexc.to_string exn));
+    if !error = false then begin
+      Runtime.report_exn conn exn;
+      error := true
+    end
+
+  let rec terminate error conn orphans =
     match Miou.care orphans with
-    | None -> Log.debug (fun m -> m "runtime task is done")
-    | Some None -> Miou.yield (); terminate conn orphans
+    | None -> ()
+    | Some None ->
+        Miou.yield ();
+        terminate error conn orphans
     | Some (Some prm) -> begin
         match Miou.await prm with
-        | Ok () -> terminate conn orphans
+        | Ok () -> terminate error conn orphans
         | Error exn ->
-            let () = try Runtime.report_exn conn exn with _ -> () in
-            terminate conn orphans
+            report_exn error conn exn;
+            terminate error conn orphans
       end
 
-  let rec clean conn orphans =
+  let rec clean error conn orphans =
     match Miou.care orphans with
     | Some None | None -> Miou.yield ()
     | Some (Some prm) -> begin
         match Miou.await prm with
-        | Ok () -> clean conn orphans
-        | Error exn ->
-            let () = try Runtime.report_exn conn exn with _ -> () in
-            clean conn orphans
+        | Ok () -> clean error conn orphans
+        | Error exn -> report_exn error conn exn; clean error conn orphans
       end
+
+  (* NOTE(dinosaure): [Runtime] design is a "runner" process that is awaiting
+     tasks. At the very beginning, we launch 2 tasks (one for reading and one
+     for writing). These can involve the creation of new tasks (via [`Yield]).
+     To respect the rule of relationship between tasks, the creation of these
+     is not done directly via [Miou.async] but transmitted to our "runner"
+     process via a queue.
+
+     It is then our runner which will really create these tasks (and probably
+     clean up the previous ones). To prevent "runner" from being a hot-loop, a
+     mutex and a condition are used so that the process is waiting for a change
+     of state (the addition of a new task or a change of state of [conn] after
+     one of the tasks has finished).
+
+     We trust [Runtime.is_closed] to complete our process, but it seems that it
+     cannot be fully trusted. There are [s_reader] and [s_writer] which
+     determine the status of the socket (whether it is closed for reading and/or
+     writing). These are not currently used but may be complementary in
+     determining the shutdown of [runner]. *)
 
   let run conn ?(read_buffer_size = _minor) flow =
     let buffer = Buffer.create read_buffer_size in
-    let s_reader = ref false and s_writer = ref false in
+    let s_rd = ref false and s_wr = ref false and error = ref false in
     let tasks = Queue.create () in
+    let lock = Miou.Mutex.create () in
+    let cond = Miou.Condition.create () in
     let runner () =
       let rec go orphans =
-        clean conn orphans;
+        clean error conn orphans;
+        let () =
+          Miou.Mutex.protect lock @@ fun () ->
+          if Queue.is_empty tasks && Runtime.is_closed conn = false then
+            Miou.Condition.wait cond lock
+        in
         let seq = Queue.to_seq tasks in
         let lst = List.of_seq seq in
         Queue.clear tasks;
@@ -236,10 +292,10 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
         if Runtime.is_closed conn = false then go orphans
       in
       let orphans = Miou.orphans () in
-      let finally () = terminate conn orphans in
+      let finally () = terminate error conn orphans in
       Fun.protect ~finally @@ fun () -> go orphans
     in
-    let rd = reader { conn; flow; tasks; buffer; stop= s_reader } in
-    let wr = writer { conn; flow; tasks; buffer; stop= s_writer } in
+    let rd = reader { conn; flow; tasks; buffer; stop= s_rd; lock; cond } in
+    let wr = writer { conn; flow; tasks; buffer; stop= s_wr; lock; cond } in
     Queue.push rd tasks; Queue.push wr tasks; Miou.async runner
 end

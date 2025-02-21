@@ -121,9 +121,7 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
     let request = Option.map (request_from_H1 ~scheme) request in
-    let err =
-      match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
-    in
+    let err = `V1 err in
     let respond hdrs =
       let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
       let body = respond hdrs in
@@ -136,8 +134,8 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
     H1.Server_connection.create ~config ~error_handler request_handler
   in
   (* NOTE(dinosaure): see the module [TCP_and_H1] and the fake shutdown. We must
-     finalize the process with [Miou_unix.close flow]. At the end, the flow is
-     only shutdown on the write side. *)
+     finalize the process with [Miou_unix.close flow] — and avoid a fd leak. At
+     the end, the flow is only shutdown on the write side. *)
   let finally () = Miou_unix.close flow in
   Fun.protect ~finally @@ fun () ->
   Miou.await_exn (B.run conn ~read_buffer_size flow)
@@ -148,9 +146,7 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
     let request = Option.map (request_from_H1 ~scheme) request in
-    let err =
-      match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V1 err
-    in
+    let err = `V1 err in
     let respond hdrs =
       let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
       let body = respond hdrs in
@@ -168,9 +164,7 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
   let read_buffer_size = config.H2.Config.read_buffer_size in
   let error_handler ?request err respond =
     let request = Option.map request_from_h2 request in
-    let err =
-      match err with `Exn (Runtime.Flow msg) -> `Protocol msg | err -> `V2 err
-    in
+    let err = `V2 err in
     let respond hdrs = `V2 (respond hdrs) in
     user's_error_handler `V2 ?request err respond
   in
@@ -230,12 +224,12 @@ let pp_sockaddr ppf = function
   | Unix.ADDR_INET (inet_addr, port) ->
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
-let clear ?stop ?(config = H1.Config.default) ?backlog
+let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog
     ?error_handler:(user's_error_handler = default_error_handler)
     ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
-    if domains >= 2 then ignore (Miou.call ~orphans fn)
+    if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
   in
   let rec go orphans file_descr =
@@ -276,12 +270,13 @@ let alpn tls =
       protocol
   | None -> None
 
-let with_tls ?stop ?(config = `Both (H1.Config.default, H2.Config.default))
-    ?backlog ?error_handler:(user's_error_handler = default_error_handler)
-    tls_config ~handler:user's_handler sockaddr =
+let with_tls ?(parallel = true) ?stop
+    ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog
+    ?error_handler:(user's_error_handler = default_error_handler) tls_config
+    ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
-    if domains >= 2 then ignore (Miou.call ~orphans fn)
+    if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
   in
   let rec go orphans file_descr =
@@ -289,32 +284,30 @@ let with_tls ?stop ?(config = `Both (H1.Config.default, H2.Config.default))
     | None -> Runtime.terminate orphans; Miou_unix.close file_descr
     | Some (fd', _sockaddr) ->
         clean_up orphans;
-        call ~orphans
-          begin
-            fun () ->
-              try
-                let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
-                begin
-                  match (config, alpn tls_flow) with
-                  | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-                      Log.debug (fun m -> m "Start a h2 request handler");
-                      h2s_server_connection ~config:h2 ~user's_error_handler
-                        ~user's_handler tls_flow
-                  | `Both (config, _), Some "http/1.1"
-                  | `HTTP_1_1 config, (Some "http/1.1" | None) ->
-                      Log.debug (fun m -> m "Start a http/1.1 request handler");
-                      https_1_1_server_connection ~config ~user's_error_handler
-                        ~user's_handler tls_flow
-                  | `Both _, None -> assert false
-                  | _, Some _protocol -> assert false
-                end
-              with exn ->
-                Log.err (fun m ->
-                    m "got a TLS error during the handshake: %s"
-                      (Printexc.to_string exn));
-                Miou_unix.close fd'
-          end;
-        go orphans file_descr
+        let fn () =
+          try
+            let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
+            begin
+              match (config, alpn tls_flow) with
+              | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
+                  Log.debug (fun m -> m "Start a h2 request handler");
+                  h2s_server_connection ~config:h2 ~user's_error_handler
+                    ~user's_handler tls_flow
+              | `Both (config, _), Some "http/1.1"
+              | `HTTP_1_1 config, (Some "http/1.1" | None) ->
+                  Log.debug (fun m -> m "Start a http/1.1 request handler");
+                  https_1_1_server_connection ~config ~user's_error_handler
+                    ~user's_handler tls_flow
+              | `Both _, None -> assert false
+              | _, Some _protocol -> assert false
+            end
+          with exn ->
+            Log.err (fun m ->
+                m "got a TLS error during the handshake: %s"
+                  (Printexc.to_string exn));
+            Miou_unix.close fd'
+        in
+        call ~orphans fn; go orphans file_descr
   in
   let socket =
     match sockaddr with
