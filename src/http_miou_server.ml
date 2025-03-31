@@ -224,7 +224,7 @@ let pp_sockaddr ppf = function
   | Unix.ADDR_INET (inet_addr, port) ->
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
-let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog
+let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler)
     ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
@@ -258,6 +258,7 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog
         else Miou_unix.tcpv4 ()
   in
   Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
   go (Miou.orphans ()) socket
 
 let alpn tls =
@@ -271,7 +272,7 @@ let alpn tls =
   | None -> None
 
 let with_tls ?(parallel = true) ?stop
-    ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog
+    ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) tls_config
     ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
@@ -317,4 +318,5 @@ let with_tls ?(parallel = true) ?stop
         else Miou_unix.tcpv4 ()
   in
   Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
   go (Miou.orphans ()) socket

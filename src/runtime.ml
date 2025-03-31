@@ -160,7 +160,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   }
 
   let reader t =
-    let rec go () =
+    let rec protected () =
       match Runtime.next_read_operation t.conn with
       | `Read ->
           Log.debug (fun m -> m "+reader");
@@ -174,7 +174,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
                 Runtime.read t.conn
           in
           let _ = Buffer.get t.buffer ~fn in
-          go ()
+          protected ()
       | `Yield ->
           let k () =
             Miou.Mutex.protect t.lock @@ fun () ->
@@ -185,23 +185,24 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           Runtime.yield_reader t.conn k
       | `Close ->
           shutdown t.flow `read;
-          t.stop := true
+          t.stop := true;
+          Log.debug (fun m -> m "+reader closed")
       | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
-    in
-    let finally () =
+    and finally () =
+      Log.debug (fun m -> m "+reader signals");
       Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
-    in
-    fun () -> Fun.protect ~finally go
+    and go () = Fun.protect ~finally protected in
+    go
 
   let writer t =
-    let rec go () =
+    let rec protected () =
       match Runtime.next_write_operation t.conn with
       | `Write iovecs ->
           let fn acc { Faraday.len; _ } = acc + len in
           let len = List.fold_left fn 0 iovecs in
           Log.debug (fun m -> m "+write %d byte(s)" len);
           writev t.flow iovecs |> Runtime.report_write_result t.conn;
-          go ()
+          protected ()
       | `Yield ->
           let k () =
             Miou.Mutex.protect t.lock @@ fun () ->
@@ -211,15 +212,15 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           Log.debug (fun m -> m "+writer yield");
           Runtime.yield_writer t.conn k
       | `Close _ ->
-          Log.debug (fun m -> m "+writer closed");
           shutdown t.flow `write;
-          t.stop := true
+          t.stop := true;
+          Log.debug (fun m -> m "+writer closed")
       | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
-    in
-    let finally () =
+    and finally () =
+      Log.debug (fun m -> m "+writer signals");
       Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
-    in
-    fun () -> Fun.protect ~finally go
+    and go () = Fun.protect ~finally protected in
+    go
 
   (* NOTE(dinosaure): report exception only once. *)
   let report_exn error conn exn =
