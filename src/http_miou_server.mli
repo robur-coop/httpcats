@@ -33,6 +33,7 @@ val clear :
   -> ?stop:stop
   -> ?config:H1.Config.t
   -> ?backlog:int
+  -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
   -> handler:handler
   -> Unix.sockaddr
@@ -46,6 +47,7 @@ val with_tls :
        | `HTTP_1_1 of H1.Config.t
        | `H2 of H2.Config.t ]
   -> ?backlog:int
+  -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
   -> Tls.Config.server
   -> handler:handler
