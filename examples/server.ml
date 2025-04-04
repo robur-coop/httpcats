@@ -19,9 +19,9 @@ let reporter ppf =
   { Logs.report }
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
-let () = Logs.set_reporter (reporter Fmt.stderr)
 
-(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
+(* let () = Logs.set_reporter (reporter Fmt.stderr) *)
+let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
@@ -104,6 +104,10 @@ let[@warning "-8"] handler _
       let body = Reqd.request_body reqd in
       Body.Reader.close body;
       Reqd.respond_with_string reqd resp text
+  | "/websocket" ->
+      let hdrs = [ ("connection", "upgrade"); ("upgrade", "websocket") ] in
+      let hdrs = Headers.of_list hdrs in
+      Reqd.respond_with_upgrade reqd hdrs
   | _ ->
       let headers = Headers.of_list [ ("content-length", "0") ] in
       let resp = Response.create ~headers `Not_found in

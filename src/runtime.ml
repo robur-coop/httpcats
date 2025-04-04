@@ -69,6 +69,8 @@ end = struct
     n
 end
 
+let empty_bt = Printexc.get_callstack max_int
+
 let rec terminate orphans =
   match Miou.care orphans with
   | None -> Miou.yield ()
@@ -155,6 +157,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     ; tasks: (unit -> unit) Queue.t
     ; buffer: Buffer.t
     ; stop: bool ref
+    ; upgrade: unit Miou.Computation.t
     ; lock: Miou.Mutex.t
     ; cond: Miou.Condition.t
   }
@@ -187,7 +190,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           shutdown t.flow `read;
           t.stop := true;
           Log.debug (fun m -> m "+reader closed")
-      | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
+      | `Upgrade -> ignore (Miou.Computation.try_return t.upgrade ())
     and finally () =
       Log.debug (fun m -> m "+reader signals");
       Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
@@ -215,7 +218,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           shutdown t.flow `write;
           t.stop := true;
           Log.debug (fun m -> m "+writer closed")
-      | `Upgrade -> Fmt.failwith "Upgrade unimplemented" (* TODO *)
+      | `Upgrade -> ignore (Miou.Computation.try_return t.upgrade ())
     and finally () =
       Log.debug (fun m -> m "+writer signals");
       Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
@@ -272,9 +275,11 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
      writing). These are not currently used but may be complementary in
      determining the shutdown of [runner]. *)
 
-  let run conn ?(read_buffer_size = _minor) flow =
+  let run conn ?(read_buffer_size = _minor) ?upgrade flow =
     let buffer = Buffer.create read_buffer_size in
     let s_rd = ref false and s_wr = ref false and error = ref false in
+    let u_rd = Miou.Computation.create () in
+    let u_wr = Miou.Computation.create () in
     let tasks = Queue.create () in
     let lock = Miou.Mutex.create () in
     let cond = Miou.Condition.create () in
@@ -291,12 +296,36 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
         Queue.clear tasks;
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
         if Runtime.is_closed conn = false then go orphans
+        else begin
+          let _ = Miou.Computation.try_cancel u_rd (Miou.Cancelled, empty_bt) in
+          let _ = Miou.Computation.try_cancel u_wr (Miou.Cancelled, empty_bt) in
+          Log.debug (fun m -> m "cancel the upgrade task")
+        end
       in
       let orphans = Miou.orphans () in
       let finally () = terminate error conn orphans in
       Fun.protect ~finally @@ fun () -> go orphans
     in
-    let rd = reader { conn; flow; tasks; buffer; stop= s_rd; lock; cond } in
-    let wr = writer { conn; flow; tasks; buffer; stop= s_wr; lock; cond } in
-    Queue.push rd tasks; Queue.push wr tasks; Miou.async runner
+    let upgrade () =
+      let () = Miou.Computation.await_exn u_rd in
+      let () = Miou.Computation.await_exn u_wr in
+      match upgrade with
+      | None -> Fmt.failwith "Upgrade unsupported"
+      | Some fn ->
+          fn flow;
+          s_rd := true;
+          s_wr := true
+    in
+    let rd =
+      reader
+        { conn; flow; tasks; buffer; stop= s_rd; upgrade= u_rd; lock; cond }
+    in
+    let wr =
+      writer
+        { conn; flow; tasks; buffer; stop= s_wr; upgrade= u_wr; lock; cond }
+    in
+    Queue.push rd tasks;
+    Queue.push wr tasks;
+    Queue.push upgrade tasks;
+    Miou.async runner
 end
