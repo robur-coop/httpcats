@@ -35,6 +35,7 @@ val clear :
   -> ?backlog:int
   -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
+  -> ?upgrade:(Miou_unix.file_descr -> unit)
   -> handler:handler
   -> Unix.sockaddr
   -> unit
@@ -50,6 +51,7 @@ val with_tls :
   -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
   -> Tls.Config.server
+  -> ?upgrade:(Tls_miou_unix.t -> unit)
   -> handler:handler
   -> Unix.sockaddr
   -> unit
