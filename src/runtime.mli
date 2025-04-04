@@ -23,9 +23,13 @@ module Make (Flow : Flow.S) (Runtime : S) : sig
   type conn = Runtime.t
   type flow = Flow.t
 
-  val run : conn -> ?read_buffer_size:int -> flow -> unit Miou.t
+  val run :
+       conn
+    -> ?read_buffer_size:int
+    -> ?upgrade:(flow -> unit)
+    -> flow
+    -> unit Miou.t
 end
 
 val terminate : unit Miou.orphans -> unit
 val clean : unit Miou.orphans -> unit
-(* val flat_tasks : (unit Miou.orphans -> 'a) -> 'a *)
