@@ -19,8 +19,7 @@ let reporter ppf =
   { Logs.report }
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
-
-(* let () = Logs.set_reporter (reporter Fmt.stderr) *)
+let () = Logs.set_reporter (reporter Fmt.stderr)
 let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
@@ -113,8 +112,13 @@ let[@warning "-8"] handler _
       let resp = Response.create ~headers `Not_found in
       Reqd.respond_with_string reqd resp ""
 
-let server stop sockaddr = Httpcats.Server.clear ~stop ~handler sockaddr
-let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
+(* TODO(upgrade) *)
+let upgrade _flow = ()
+
+let server stop sockaddr =
+  Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr
+
+(*let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore*)
 
 let () =
   let addr = sockaddr_of_arguments () in
