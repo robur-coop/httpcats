@@ -210,9 +210,9 @@ let accept_or_stop ?stop file_descr =
   | None -> Some (Miou_unix.accept file_descr)
   | Some stop -> (
       let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
-      let wait = Miou.async (wait stop) in
+      let stop = Miou.async (wait stop) in
       Log.debug (fun m -> m "waiting for a client");
-      match Miou.await_first [ accept; wait ] with
+      match Miou.await_first [ accept; stop ] with
       | Ok (fd, sockaddr) -> Some (fd, sockaddr)
       | Error Stop -> None
       | Error exn ->
