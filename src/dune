@@ -13,5 +13,6 @@
   happy-eyeballs-miou-unix
   dns-client-miou-unix
   h1
+  h1-ws
   h2
   tls-miou-unix))

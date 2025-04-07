@@ -28,6 +28,7 @@ end
 
 module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
 module C = Runtime.Make (TLS) (H2_Server_connection)
+module B_websocket = Runtime.Make (TCP_and_H1) (H1_ws.Server_connection)
 
 type error =
   [ `V1 of H1.Server_connection.error
@@ -321,3 +322,8 @@ let with_tls ?(parallel = true) ?stop
   Miou_unix.bind_and_listen ?backlog socket sockaddr;
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
   go (Miou.orphans ()) socket
+
+let websocket_upgrade ~websocket_handler flow =
+  let conn = H1_ws.Server_connection.create ~websocket_handler in
+  (* don't close flow here, the Runtime that lauched the upgrade will be the one to do it *)
+  Miou.await_exn (B_websocket.run conn flow)
