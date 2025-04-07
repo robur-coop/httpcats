@@ -94,6 +94,13 @@ let resp =
   in
   Response.create ~headers `OK
 
+let sec_websocket_accept key =
+  let s = key ^ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" in
+  s
+  |> Digestif.SHA1.digest_string
+  |> Digestif.SHA1.to_raw_string
+  |> Base64.encode_string
+
 let[@warning "-8"] handler _
     (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
   let open H1 in
@@ -103,17 +110,68 @@ let[@warning "-8"] handler _
       let body = Reqd.request_body reqd in
       Body.Reader.close body;
       Reqd.respond_with_string reqd resp text
-  | "/websocket" ->
-      let hdrs = [ ("connection", "upgrade"); ("upgrade", "websocket") ] in
-      let hdrs = Headers.of_list hdrs in
-      Reqd.respond_with_upgrade reqd hdrs
+  | "/websocket" -> (
+      (* TODO only allow a client to upgrade once *)
+      match Headers.get request.headers "sec-websocket-key" with
+      | None -> failwith "bad headers"
+      | Some key ->
+          let hdrs =
+            [
+              ("connection", "upgrade"); ("upgrade", "websocket")
+            ; ("sec-websocket-accept", sec_websocket_accept key)
+            ]
+          in
+          let hdrs = Headers.of_list hdrs in
+          Reqd.respond_with_upgrade reqd hdrs)
   | _ ->
       let headers = Headers.of_list [ ("content-length", "0") ] in
       let resp = Response.create ~headers `Not_found in
       Reqd.respond_with_string reqd resp ""
 
-(* TODO(upgrade) *)
-let upgrade _flow = ()
+let src = Logs.Src.create "examples/server.ml"
+
+module Log = (val Logs.src_log src : Logs.LOG)
+
+let rec clean_up orphans =
+  match Miou.care orphans with
+  | None | Some None -> ()
+  | Some (Some prm) -> (
+      match Miou.await prm with
+      | Ok () -> clean_up orphans
+      | Error exn ->
+          Log.err (fun m ->
+              m "unexpected exception: %s" (Printexc.to_string exn));
+          clean_up orphans)
+
+let echo_handler ~in_stream ~out_stream =
+  let rec loop () =
+    match Bstream.get in_stream with
+    | None ->
+        Log.debug (fun m -> m "echo loop stop");
+        Bstream.put out_stream None;
+        ()
+    | Some v ->
+        Log.debug (fun m -> m "echo loop continue");
+        Bstream.put out_stream (Some v);
+        loop ()
+  in
+  loop ()
+
+let upgrade (flow : Httpcats.Miou_flow.TCP.t) =
+  let orphans = Miou.orphans () in
+  let in_stream = Bstream.create 0x100 None in
+  let out_stream = Bstream.create 0x100 None in
+  let () =
+    ignore
+    @@ Miou.async ~orphans
+    @@ fun () -> echo_handler ~in_stream ~out_stream
+  in
+  let websocket_handler wsd =
+    Websocket.handler ~orphans ~in_stream ~out_stream wsd
+  in
+  Httpcats.Server.websocket_upgrade ~websocket_handler flow;
+  clean_up orphans;
+  ()
 
 let server stop sockaddr =
   Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr

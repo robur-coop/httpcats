@@ -40,6 +40,11 @@ val clear :
   -> Unix.sockaddr
   -> unit
 
+val websocket_upgrade :
+     websocket_handler:(H1_ws.Wsd.t -> H1_ws.Websocket_connection.input_handlers)
+  -> Miou_unix.file_descr
+  -> unit
+
 val with_tls :
      ?parallel:bool
   -> ?stop:stop

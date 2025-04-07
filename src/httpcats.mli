@@ -6,6 +6,9 @@
     [ocaml-tls]) are supported. A connection is established via the
     happy-eyeballs algorithm if provided. *)
 
+module Flow = Flow
+module Miou_flow = Http_miou_unix
+
 type error =
   [ `V1 of H1.Client_connection.error
   | `V2 of H2.Client_connection.error
