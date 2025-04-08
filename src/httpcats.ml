@@ -8,6 +8,7 @@ module Server = Http_miou_server
 module Version = H1.Version
 module Status = H2.Status
 module Headers = H2.Headers
+module Method = H2.Method
 
 let ( % ) f g x = f (g x)
 
@@ -107,6 +108,8 @@ let add_authentication ?(meth = `Basic) ~add headers user_pass =
 
 let user_agent = "hurl/%%VERSION_NUM%%"
 
+type request = { meth: Method.t; target: string; headers: Headers.t }
+
 type response = {
     version: Version.t
   ; status: Status.t
@@ -135,7 +138,7 @@ let pp_error ppf = function
 
 type body = String of string | Stream of string Seq.t
 type meta = (Ipaddr.t * int) * Tls.Core.epoch_data option
-type 'a handler = meta -> response -> 'a -> string option -> 'a
+type 'a handler = meta -> request -> response -> 'a -> string option -> 'a
 
 type config = {
     meth: H2.Method.t
@@ -204,7 +207,7 @@ let prep_h2_headers cfg body =
   let hdr = List.sort (fun (a, _) (b, _) -> String.compare a b) hdr in
   H2.Headers.of_list hdr
 
-let from_h1 response =
+let resp_from_h1 response =
   {
     version= response.H1.Response.version
   ; status= (response.H1.Response.status :> H2.Status.t)
@@ -213,12 +216,26 @@ let from_h1 response =
       H2.Headers.of_list (H1.Headers.to_list response.H1.Response.headers)
   }
 
-let from_h2 response =
+let req_from_h1 req =
+  {
+    meth= req.H1.Request.meth
+  ; target= req.H1.Request.target
+  ; headers= H2.Headers.of_list (H1.Headers.to_list req.H1.Request.headers)
+  }
+
+let resp_from_h2 response =
   {
     version= { major= 2; minor= 0 }
   ; status= response.H2.Response.status
   ; reason= H2.Status.to_string response.H2.Response.status
   ; headers= response.H2.Response.headers
+  }
+
+let req_from_h2 req =
+  {
+    meth= req.H2.Request.meth
+  ; target= req.H2.Request.target
+  ; headers= req.H2.Request.headers
   }
 
 let _is_a_valid_redirection resp ~uri =
@@ -253,7 +270,7 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
   let request = H1.Request.create ~headers meth path in
   let meta = ((cfg.ipaddr, cfg.port), cfg.epoch) in
   let f (`V1 resp : Client.response) acc str =
-    fn meta (from_h1 resp) acc (Some str)
+    fn meta (req_from_h1 request) (resp_from_h1 resp) acc (Some str)
   in
   let finally () =
     Log.debug (fun m -> m "close the underlying socket");
@@ -283,8 +300,9 @@ let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
   let* resp = Result.map_error (on_error % fst) resp in
   let* () = Result.map_error on_error (Miou.await sender) in
   let* () = Result.map_error on_error (Miou.await process) in
-  let resp = from_h1 resp in
-  Ok (resp, fn meta resp !acc None)
+  let req = req_from_h1 request in
+  let resp = resp_from_h1 resp in
+  Ok (resp, fn meta req resp !acc None)
 
 let h2_writer body seq () =
   let rec next seq reason =
@@ -313,7 +331,7 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
   let request = H2.Request.create ~scheme ~headers meth path in
   let meta = ((cfg.ipaddr, cfg.port), cfg.epoch) in
   let f (`V2 response : Client.response) acc str =
-    fn meta (from_h2 response) acc (Some str)
+    fn meta (req_from_h2 request) (resp_from_h2 response) acc (Some str)
   in
   let (Client.Process { version= V2; acc; response; body; process; _ }) =
     Client.run ~f acc (`V2 config) flow (`V2 request)
@@ -336,8 +354,9 @@ let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
   let* resp = Result.map_error (on_error % fst) resp in
   let* () = Result.map_error on_error (Miou.await sender) in
   let* () = Result.map_error on_error (Miou.await process) in
-  let resp = from_h2 resp in
-  Ok (resp, fn meta resp !acc None)
+  let req = req_from_h2 request in
+  let resp = resp_from_h2 resp in
+  Ok (resp, fn meta req resp !acc None)
 
 let alpn_protocol = function
   | `Tcp _ -> None

@@ -31,6 +31,10 @@ module Headers = H2.Headers
 
     Case-insensitive key-value pairs. *)
 
+module Method = H2.Method
+
+type request = { meth: Method.t; target: string; headers: Headers.t }
+
 type response = {
     version: Version.t
   ; status: Status.t
@@ -54,7 +58,7 @@ type meta = (Ipaddr.t * int) * Tls.Core.epoch_data option
     address and the configuration chosen during the TLS handshake). In this
     sense, all this information is condensed into the meta type. *)
 
-type 'a handler = meta -> response -> 'a -> string option -> 'a
+type 'a handler = meta -> request -> response -> 'a -> string option -> 'a
 (** The handler is a function that is called each time a new part of the
     response body is retrieved. The end of the response content is notified by
     [None]. The user can then evolve a ['a] value between each call to the
