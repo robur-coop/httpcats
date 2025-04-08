@@ -137,7 +137,7 @@ let test00 =
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver:(`Happy resolver)
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000/" (Buffer.create 0x10)
   with
@@ -195,7 +195,7 @@ let test01 =
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver:(`Happy resolver)
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
   with
@@ -292,7 +292,7 @@ let test02 =
   in
   match
     Httpcats.request ~resolver:(`Happy resolver) ~meth:`POST ~body
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
   with
@@ -358,7 +358,7 @@ let test03 =
       |> Result.get_ok
     in
     Httpcats.request ~resolver:(`Happy resolver) ~tls_config
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
@@ -367,7 +367,7 @@ let test03 =
     Miou.async @@ fun () ->
     let* res =
       Httpcats.request ~resolver:(`Happy resolver) ~authenticator
-        ~f:(fun _ _resp buf -> function
+        ~f:(fun _ _req _resp buf -> function
           | Some str -> Buffer.add_string buf str; buf | None -> buf)
         ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
       |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
@@ -458,7 +458,7 @@ let test04 =
       |> Result.get_ok
     in
     Httpcats.request ~resolver:(`Happy resolver) ~tls_config
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
@@ -466,7 +466,7 @@ let test04 =
   let h2 =
     Miou.async @@ fun () ->
     Httpcats.request ~resolver:(`Happy resolver) ~authenticator
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
@@ -546,7 +546,7 @@ let test05 =
     in
     Httpcats.request ~resolver:(`Happy resolver) ~tls_config ~meth:`POST
       ~body:(Httpcats.string body)
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
@@ -555,7 +555,7 @@ let test05 =
     Miou.async @@ fun () ->
     Httpcats.request ~resolver:(`Happy resolver) ~authenticator ~meth:`POST
       ~body:(Httpcats.string body)
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
@@ -607,7 +607,7 @@ let test06 =
   let request =
     Miou.async @@ fun () ->
     Httpcats.request ~resolver:(`Happy resolver) ~authenticator
-      ~f:(fun _ _resp buf -> function
+      ~f:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~headers:
         [
