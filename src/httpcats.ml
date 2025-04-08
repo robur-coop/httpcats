@@ -108,11 +108,7 @@ let add_authentication ?(meth = `Basic) ~add headers user_pass =
 
 let user_agent = "hurl/%%VERSION_NUM%%"
 
-type request = {
-    meth: Method.t
-  ; target: string
-  ; headers: Headers.t
-}
+type request = { meth: Method.t; target: string; headers: Headers.t }
 
 type response = {
     version: Version.t
@@ -221,9 +217,11 @@ let resp_from_h1 response =
   }
 
 let req_from_h1 req =
-  { meth= req.H1.Request.meth
+  {
+    meth= req.H1.Request.meth
   ; target= req.H1.Request.target
-  ; headers= H2.Headers.of_list (H1.Headers.to_list req.H1.Request.headers) }
+  ; headers= H2.Headers.of_list (H1.Headers.to_list req.H1.Request.headers)
+  }
 
 let resp_from_h2 response =
   {
@@ -234,9 +232,11 @@ let resp_from_h2 response =
   }
 
 let req_from_h2 req =
-  { meth= req.H2.Request.meth
+  {
+    meth= req.H2.Request.meth
   ; target= req.H2.Request.target
-  ; headers= req.H2.Request.headers }
+  ; headers= req.H2.Request.headers
+  }
 
 let _is_a_valid_redirection resp ~uri =
   if Status.is_redirection resp.status then

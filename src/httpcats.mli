@@ -33,11 +33,7 @@ module Headers = H2.Headers
 
 module Method = H2.Method
 
-type request = {
-    meth: Method.t
-  ; target: string
-  ; headers: Headers.t
-}
+type request = { meth: Method.t; target: string; headers: Headers.t }
 
 type response = {
     version: Version.t
