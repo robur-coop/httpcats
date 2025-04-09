@@ -115,8 +115,8 @@ let default_error_handler version ?request:_ err respond =
       Log.debug (fun m -> m "flush the errored h2 response");
       H2.Body.Writer.flush body fn
 
-let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
-    flow =
+let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
+    ~user's_handler flow =
   let scheme = "http" in
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
@@ -138,10 +138,10 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
      the end, the flow is only shutdown on the write side. *)
   let finally () = Miou_unix.close flow in
   Fun.protect ~finally @@ fun () ->
-  Miou.await_exn (B.run conn ~read_buffer_size flow)
+  Miou.await_exn (B.run conn ~read_buffer_size ?upgrade flow)
 
-let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
-    flow =
+let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
+    ~user's_handler flow =
   let scheme = "https" in
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
@@ -158,9 +158,10 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
   let conn =
     H1.Server_connection.create ~config ~error_handler request_handler
   in
-  Miou.await_exn (A.run conn ~read_buffer_size flow)
+  Miou.await_exn (A.run conn ~read_buffer_size ?upgrade flow)
 
-let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
+let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
+    flow =
   let read_buffer_size = config.H2.Config.read_buffer_size in
   let error_handler ?request err respond =
     let request = Option.map request_from_h2 request in
@@ -172,7 +173,7 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
   let conn =
     H2.Server_connection.create ~config ~error_handler request_handler
   in
-  Miou.await_exn (C.run conn ~read_buffer_size flow)
+  Miou.await_exn (C.run conn ~read_buffer_size ?upgrade flow)
 
 let rec clean_up orphans =
   match Miou.care orphans with
@@ -225,7 +226,7 @@ let pp_sockaddr ppf = function
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
-    ?error_handler:(user's_error_handler = default_error_handler)
+    ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
     ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
@@ -245,7 +246,7 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         call ~orphans
           begin
             fun () ->
-              http_1_1_server_connection ~config ~user's_error_handler
+              http_1_1_server_connection ~config ~user's_error_handler ?upgrade
                 ~user's_handler fd'
           end;
         go orphans file_descr
@@ -274,7 +275,7 @@ let alpn tls =
 let with_tls ?(parallel = true) ?stop
     ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) tls_config
-    ~handler:user's_handler sockaddr =
+    ?upgrade ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
@@ -293,12 +294,12 @@ let with_tls ?(parallel = true) ?stop
               | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
                   Log.debug (fun m -> m "Start a h2 request handler");
                   h2s_server_connection ~config:h2 ~user's_error_handler
-                    ~user's_handler tls_flow
+                    ?upgrade ~user's_handler tls_flow
               | `Both (config, _), Some "http/1.1"
               | `HTTP_1_1 config, (Some "http/1.1" | None) ->
                   Log.debug (fun m -> m "Start a http/1.1 request handler");
                   https_1_1_server_connection ~config ~user's_error_handler
-                    ~user's_handler tls_flow
+                    ?upgrade ~user's_handler tls_flow
               | `Both _, None -> assert false
               | _, Some _protocol -> assert false
             end
