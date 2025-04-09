@@ -41,7 +41,7 @@ val clear :
   -> unit
 
 val websocket_upgrade :
-     websocket_handler:(H1_ws.Wsd.t -> H1_ws.Websocket_connection.input_handlers)
+     websocket_handler:(H1_ws.Wsd.t -> H1_ws.Websocket.input_handlers)
   -> Miou_unix.file_descr
   -> unit
 

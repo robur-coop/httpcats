@@ -145,15 +145,9 @@ let rec clean_up orphans =
 
 let echo_handler ~in_stream ~out_stream =
   let rec loop () =
-    match Bstream.get in_stream with
-    | None ->
-        Log.debug (fun m -> m "echo loop stop");
-        Bstream.put out_stream None;
-        ()
-    | Some v ->
-        Log.debug (fun m -> m "echo loop continue");
-        Bstream.put out_stream (Some v);
-        loop ()
+    let opt = Bstream.get in_stream in
+    Bstream.put out_stream opt;
+    Option.iter (fun _v -> loop ()) opt
   in
   loop ()
 
