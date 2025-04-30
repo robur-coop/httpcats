@@ -40,10 +40,19 @@ val clear :
   -> Unix.sockaddr
   -> unit
 
-val websocket_upgrade :
-     websocket_handler:(H1_ws.Wsd.t -> H1_ws.Websocket.input_handlers)
-  -> Miou_unix.file_descr
-  -> unit
+module Bstream = Bstream
+
+type elt =
+  ([ `Connection_close
+   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Other
+   | `Ping
+   | `Pong ]
+  * bytes)
+  option
+  Bstream.t
+
+val websocket_upgrade : fn:(elt -> elt -> unit) -> Miou_unix.file_descr -> unit
 
 val with_tls :
      ?parallel:bool

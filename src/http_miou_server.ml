@@ -339,15 +339,76 @@ module Websocket_connection = struct
   let yield_reader _t _k = assert false
 
   let report_exn _t exn =
-    (* TODO
-       implement report_exn in H1_ws, just need to close wsd? *)
     Log.err (fun m -> m "websocket runtime: report_exn");
     raise exn
 end
 
-module B_websocket = Runtime.Make (TCP_and_H1) (Websocket_connection)
+module D = Runtime.Make (TCP_and_H1) (Websocket_connection)
+module Bstream = Bstream
 
-let websocket_upgrade ~websocket_handler flow =
-  let conn = H1_ws.Server_connection.create ~websocket_handler in
-  (* don't close flow here, the Runtime that lauched the upgrade will be the one to do it *)
-  Miou.await_exn (B_websocket.run conn flow)
+type elt =
+  ([ `Connection_close
+   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Other
+   | `Ping
+   | `Pong ]
+  * bytes)
+  option
+  Bstream.t
+
+open H1_ws
+
+let write_websocket oc wsd =
+  let write () =
+    match Bstream.get oc with
+    | None -> `Stop
+    | Some (kind, data) -> (
+        match kind with
+        | `Connection_close -> `Stop
+        | `Ping -> Wsd.send_ping wsd; `Continue
+        | `Pong -> Wsd.send_pong wsd; `Continue
+        | `Other -> failwith "Unsupported frame of kind `Other"
+        | `Msg (kind, is_fin) ->
+            let len = Bytes.length data in
+            Wsd.send_bytes wsd ~kind ~is_fin data ~off:0 ~len;
+            `Continue)
+  in
+  let rec go () =
+    match write () with `Stop -> Wsd.close wsd; () | `Continue -> go ()
+  in
+  go
+
+let websocket_handler ic ivar wsd =
+  ignore (Miou.Computation.try_return ivar wsd);
+  let frame_handler ~opcode ~is_fin bstr ~off ~len =
+    let data =
+      let s = Bigstringaf.substring bstr ~off ~len in
+      String.to_bytes s
+    in
+    let v =
+      match opcode with
+      | `Other _ -> (`Other, data)
+      | #Websocket.Opcode.standard_control as kind -> (kind, data)
+      | #Websocket.Opcode.standard_non_control as kind ->
+          (`Msg (kind, is_fin), data)
+    in
+    Bstream.put ic (Some v)
+  in
+  let eof () = Bstream.put ic None in
+  Websocket.{ frame_handler; eof }
+
+let websocket_upgrade ~fn flow =
+  let ic = Bstream.create 0x100 None in
+  let oc = Bstream.create 0x100 None in
+  let ivar = Miou.Computation.create () in
+  let websocket_handler = websocket_handler ic ivar in
+  let conn =
+    H1_ws.Server_connection.create ~websocket_handler
+    (* wsd -> input_handlers *)
+  in
+  let runtime's_prm = D.run conn flow in
+  let wsd = Miou.Computation.await_exn ivar in
+  let writer = Miou.async (write_websocket oc wsd) in
+  let user's_handler = Miou.async @@ fun () -> fn ic oc in
+  Miou.await_all [ runtime's_prm; user's_handler; writer ]
+  |> List.iter (function Ok () -> () | Error exn -> raise exn)
