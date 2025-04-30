@@ -7,6 +7,7 @@
   http_miou_client
   http_miou_server
   flow
+  bstream
   runtime)
  (libraries
   ca-certs

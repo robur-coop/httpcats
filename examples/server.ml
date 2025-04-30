@@ -131,41 +131,18 @@ let[@warning "-8"] handler _
 let src = Logs.Src.create "examples/server.ml"
 
 module Log = (val Logs.src_log src : Logs.LOG)
+module Bstream = Httpcats.Server.Bstream
 
-let rec clean_up orphans =
-  match Miou.care orphans with
-  | None | Some None -> ()
-  | Some (Some prm) -> (
-      match Miou.await prm with
-      | Ok () -> clean_up orphans
-      | Error exn ->
-          Log.err (fun m ->
-              m "unexpected exception: %s" (Printexc.to_string exn));
-          clean_up orphans)
-
-let echo_handler ~in_stream ~out_stream =
+let echo_handler ic oc =
   let rec loop () =
-    let opt = Bstream.get in_stream in
-    Bstream.put out_stream opt;
+    let opt = Bstream.get ic in
+    Bstream.put oc opt;
     Option.iter (fun _v -> loop ()) opt
   in
   loop ()
 
 let upgrade (flow : Httpcats.Miou_flow.TCP.t) =
-  let orphans = Miou.orphans () in
-  let in_stream = Bstream.create 0x100 None in
-  let out_stream = Bstream.create 0x100 None in
-  let () =
-    ignore
-    @@ Miou.async ~orphans
-    @@ fun () -> echo_handler ~in_stream ~out_stream
-  in
-  let websocket_handler wsd =
-    Websocket.handler ~orphans ~in_stream ~out_stream wsd
-  in
-  Httpcats.Server.websocket_upgrade ~websocket_handler flow;
-  clean_up orphans;
-  ()
+  Httpcats.Server.websocket_upgrade ~fn:echo_handler flow
 
 let server stop sockaddr =
   Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr

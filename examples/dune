@@ -1,6 +1,6 @@
 (executable
  (name server)
- (modules server bstream websocket)
+ (modules server websocket)
  (libraries fmt.tty logs.fmt logs.threaded httpcats h1-ws digestif base64))
 
 (executable
