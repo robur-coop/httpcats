@@ -135,9 +135,7 @@ module Bstream = Httpcats.Server.Bstream
 
 let echo_handler ic oc =
   let rec loop () =
-    let opt = Bstream.get ic in
-    Bstream.put oc opt;
-    Option.iter (fun _v -> loop ()) opt
+    Bstream.get ic |> Option.iter (fun v -> Bstream.put oc v; loop ())
   in
   loop ()
 

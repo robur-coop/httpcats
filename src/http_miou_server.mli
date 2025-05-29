@@ -49,7 +49,6 @@ type elt =
    | `Ping
    | `Pong ]
   * bytes)
-  option
   Bstream.t
 
 val websocket_upgrade : fn:(elt -> elt -> unit) -> Miou_unix.file_descr -> unit

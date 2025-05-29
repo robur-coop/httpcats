@@ -353,7 +353,6 @@ type elt =
    | `Ping
    | `Pong ]
   * bytes)
-  option
   Bstream.t
 
 open H1_ws
@@ -392,14 +391,14 @@ let websocket_handler ic ivar wsd =
       | #Websocket.Opcode.standard_non_control as kind ->
           (`Msg (kind, is_fin), data)
     in
-    Bstream.put ic (Some v)
+    Bstream.put ic v
   in
-  let eof () = Bstream.put ic None in
+  let eof () = Bstream.close ic in
   Websocket.{ frame_handler; eof }
 
 let websocket_upgrade ~fn flow =
-  let ic = Bstream.create 0x100 None in
-  let oc = Bstream.create 0x100 None in
+  let ic = Bstream.create 0x100 in
+  let oc = Bstream.create 0x100 in
   let ivar = Miou.Computation.create () in
   let websocket_handler = websocket_handler ic ivar in
   let conn =
