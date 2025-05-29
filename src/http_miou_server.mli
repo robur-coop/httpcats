@@ -68,6 +68,12 @@ type elt =
   * bytes)
   Bstream.t
 
+type ws_stop
+
+val ws_stop : unit -> ws_stop
+val ws_switch : ws_stop -> unit
+
 (* TODO(upgrade)
-   should not be called on H2 connection (?) *)
-val websocket_upgrade : fn:(elt -> elt -> unit) -> flow -> unit
+   should not be called on H2 connection (?)
+   do we need stop or can we just close flow instead? *)
+val websocket_upgrade : ?stop:ws_stop -> fn:(elt -> elt -> unit) -> flow -> unit

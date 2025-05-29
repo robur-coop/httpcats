@@ -360,8 +360,8 @@ type elt =
 
 open H1_ws
 
-module Close_state = struct
-  (* TODO do we need the lock? *)
+module Ws_stop = struct
+  (* TODO do we need the lock? re-use type stop? *)
   type t = {
       lock: Miou.Mutex.t
     ; cond: Miou.Condition.t
@@ -402,7 +402,12 @@ module Close_state = struct
     f t.received t.emitted
 end
 
-let write_websocket oc close_state wsd =
+type ws_stop = Ws_stop.t
+
+let ws_stop () = Ws_stop.create ()
+let ws_switch o = Ws_stop.set_eof o
+
+let write_websocket oc stop wsd =
   let rec go () =
     match Bstream.get oc with
     | None -> ()
@@ -411,10 +416,7 @@ let write_websocket oc close_state wsd =
           match kind with
           | `Other -> failwith "Unsupported frame of kind `Other"
           | `Connection_close ->
-              Wsd.close wsd;
-              Bstream.close oc;
-              Close_state.set_emmited close_state;
-              ()
+              Wsd.close wsd; Bstream.close oc; Ws_stop.set_emmited stop; ()
           | `Ping -> Wsd.send_ping wsd
           | `Pong -> Wsd.send_pong wsd
           | `Msg (kind, is_fin) ->
@@ -426,7 +428,7 @@ let write_websocket oc close_state wsd =
   in
   go
 
-let websocket_handler ic ivar close_state wsd =
+let websocket_handler ic ivar stop wsd =
   ignore (Miou.Computation.try_return ivar wsd);
   let frame_handler ~opcode ~is_fin bstr ~off ~len =
     let data =
@@ -437,24 +439,21 @@ let websocket_handler ic ivar close_state wsd =
     | `Other _ -> Bstream.put ic (`Other, data)
     | `Connection_close ->
         Bstream.put ic (`Connection_close, data);
-        Close_state.set_received close_state;
+        Ws_stop.set_received stop;
         Bstream.close ic
     | #Websocket.Opcode.standard_control as kind -> Bstream.put ic (kind, data)
     | #Websocket.Opcode.standard_non_control as kind ->
         Bstream.put ic (`Msg (kind, is_fin), data)
   in
-  let eof () =
-    Close_state.set_eof close_state;
-    ()
-  in
+  let eof () = Ws_stop.set_eof stop; () in
   Websocket.{ frame_handler; eof }
 
-let websocket_upgrade ~fn flow =
+let websocket_upgrade ?stop ~fn flow =
   let ic = Bstream.create 0x100 in
   let oc = Bstream.create 0x100 in
   let ivar = Miou.Computation.create () in
-  let close_state = Close_state.create () in
-  let websocket_handler = websocket_handler ic ivar close_state in
+  let stop = match stop with None -> Ws_stop.create () | Some stop -> stop in
+  let websocket_handler = websocket_handler ic ivar stop in
   let conn =
     H1_ws.Server_connection.create ~websocket_handler
     (* wsd -> input_handlers *)
@@ -465,11 +464,11 @@ let websocket_upgrade ~fn flow =
     | `Tls flow -> E.run conn flow
   in
   let wsd = Miou.Computation.await_exn ivar in
-  let writer = Miou.async (write_websocket oc close_state wsd) in
+  let writer = Miou.async (write_websocket oc stop wsd) in
   let user's_handler = Miou.async @@ fun () -> fn ic oc in
   let close =
     Miou.async @@ fun () ->
-    Close_state.on_close close_state @@ fun received emitted ->
+    Ws_stop.on_close stop @@ fun received emitted ->
     if received && emitted then (
       Log.debug (fun m -> m "websocket clean close");
       (* ic and oc have already been closed *)
