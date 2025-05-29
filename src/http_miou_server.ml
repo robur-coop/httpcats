@@ -358,22 +358,22 @@ type elt =
 open H1_ws
 
 let write_websocket oc wsd =
-  let write () =
-    match Bstream.get oc with
-    | None -> `Stop
-    | Some (kind, data) -> (
-        match kind with
-        | `Connection_close -> `Stop
-        | `Ping -> Wsd.send_ping wsd; `Continue
-        | `Pong -> Wsd.send_pong wsd; `Continue
-        | `Other -> failwith "Unsupported frame of kind `Other"
-        | `Msg (kind, is_fin) ->
-            let len = Bytes.length data in
-            Wsd.send_bytes wsd ~kind ~is_fin data ~off:0 ~len;
-            `Continue)
-  in
   let rec go () =
-    match write () with `Stop -> Wsd.close wsd; () | `Continue -> go ()
+    match Bstream.get oc with
+    | None -> ()
+    | Some (kind, data) ->
+        begin
+          match kind with
+          | `Other -> failwith "Unsupported frame of kind `Other"
+          | `Connection_close -> Wsd.close wsd; Bstream.close oc
+          | `Ping -> Wsd.send_ping wsd
+          | `Pong -> Wsd.send_pong wsd
+          | `Msg (kind, is_fin) ->
+              let len = Bytes.length data in
+              Wsd.send_bytes wsd ~kind ~is_fin data ~off:0 ~len;
+              ()
+        end;
+        go ()
   in
   go
 
