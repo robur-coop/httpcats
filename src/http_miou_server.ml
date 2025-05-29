@@ -53,6 +53,8 @@ module Method = H2.Method
 module Headers = H2.Headers
 module Status = H2.Status
 
+type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
+
 type request = {
     meth: Method.t
   ; target: string
@@ -344,6 +346,7 @@ module Websocket_connection = struct
 end
 
 module D = Runtime.Make (TCP_and_H1) (Websocket_connection)
+module E = Runtime.Make (Tls_miou_unix) (Websocket_connection)
 module Bstream = Bstream
 
 type elt =
@@ -456,7 +459,11 @@ let websocket_upgrade ~fn flow =
     H1_ws.Server_connection.create ~websocket_handler
     (* wsd -> input_handlers *)
   in
-  let runtime's_prm = D.run conn flow in
+  let runtime's_prm =
+    match flow with
+    | `Tcp flow -> D.run conn flow
+    | `Tls flow -> E.run conn flow
+  in
   let wsd = Miou.Computation.await_exn ivar in
   let writer = Miou.async (write_websocket oc close_state wsd) in
   let user's_handler = Miou.async @@ fun () -> fn ic oc in

@@ -139,8 +139,8 @@ let echo_handler ic oc =
   in
   loop ()
 
-let upgrade (flow : Httpcats.Miou_flow.TCP.t) =
-  Httpcats.Server.websocket_upgrade ~fn:echo_handler flow
+let upgrade flow =
+  Httpcats.Server.websocket_upgrade ~fn:echo_handler (`Tcp flow)
 
 let server stop sockaddr =
   Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr

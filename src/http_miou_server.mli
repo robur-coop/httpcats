@@ -11,6 +11,8 @@ type stop
 val stop : unit -> stop
 val switch : stop -> unit
 
+type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
+
 type request = {
     meth: Method.t
   ; target: string
@@ -25,8 +27,7 @@ type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler =
   [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
 
-type handler =
-  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
+type handler = flow -> reqd -> unit
 
 val clear :
      ?parallel:bool
@@ -39,19 +40,6 @@ val clear :
   -> handler:handler
   -> Unix.sockaddr
   -> unit
-
-module Bstream = Bstream
-
-type elt =
-  ([ `Connection_close
-   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
-   | `Other
-   | `Ping
-   | `Pong ]
-  * bytes)
-  Bstream.t
-
-val websocket_upgrade : fn:(elt -> elt -> unit) -> Miou_unix.file_descr -> unit
 
 val with_tls :
      ?parallel:bool
@@ -68,3 +56,18 @@ val with_tls :
   -> handler:handler
   -> Unix.sockaddr
   -> unit
+
+module Bstream = Bstream
+
+type elt =
+  ([ `Connection_close
+   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Other
+   | `Ping
+   | `Pong ]
+  * bytes)
+  Bstream.t
+
+(* TODO(upgrade)
+   should not be called on H2 connection (?) *)
+val websocket_upgrade : fn:(elt -> elt -> unit) -> flow -> unit
