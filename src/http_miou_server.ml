@@ -115,8 +115,8 @@ let default_error_handler version ?request:_ err respond =
       Log.debug (fun m -> m "flush the errored h2 response");
       H2.Body.Writer.flush body fn
 
-let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
-    flow =
+let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
+    ~user's_handler flow =
   let scheme = "http" in
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
@@ -138,10 +138,10 @@ let http_1_1_server_connection ~config ~user's_error_handler ~user's_handler
      the end, the flow is only shutdown on the write side. *)
   let finally () = Miou_unix.close flow in
   Fun.protect ~finally @@ fun () ->
-  Miou.await_exn (B.run conn ~read_buffer_size flow)
+  Miou.await_exn (B.run conn ~read_buffer_size ?upgrade flow)
 
-let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
-    flow =
+let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
+    ~user's_handler flow =
   let scheme = "https" in
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
@@ -158,9 +158,10 @@ let https_1_1_server_connection ~config ~user's_error_handler ~user's_handler
   let conn =
     H1.Server_connection.create ~config ~error_handler request_handler
   in
-  Miou.await_exn (A.run conn ~read_buffer_size flow)
+  Miou.await_exn (A.run conn ~read_buffer_size ?upgrade flow)
 
-let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
+let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
+    flow =
   let read_buffer_size = config.H2.Config.read_buffer_size in
   let error_handler ?request err respond =
     let request = Option.map request_from_h2 request in
@@ -172,7 +173,7 @@ let h2s_server_connection ~config ~user's_error_handler ~user's_handler flow =
   let conn =
     H2.Server_connection.create ~config ~error_handler request_handler
   in
-  Miou.await_exn (C.run conn ~read_buffer_size flow)
+  Miou.await_exn (C.run conn ~read_buffer_size ?upgrade flow)
 
 let rec clean_up orphans =
   match Miou.care orphans with
@@ -209,9 +210,9 @@ let accept_or_stop ?stop file_descr =
   | None -> Some (Miou_unix.accept file_descr)
   | Some stop -> (
       let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
-      let wait = Miou.async (wait stop) in
+      let stop = Miou.async (wait stop) in
       Log.debug (fun m -> m "waiting for a client");
-      match Miou.await_first [ accept; wait ] with
+      match Miou.await_first [ accept; stop ] with
       | Ok (fd, sockaddr) -> Some (fd, sockaddr)
       | Error Stop -> None
       | Error exn ->
@@ -225,7 +226,7 @@ let pp_sockaddr ppf = function
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
 
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
-    ?error_handler:(user's_error_handler = default_error_handler)
+    ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
     ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
@@ -245,7 +246,7 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         call ~orphans
           begin
             fun () ->
-              http_1_1_server_connection ~config ~user's_error_handler
+              http_1_1_server_connection ~config ~user's_error_handler ?upgrade
                 ~user's_handler fd'
           end;
         go orphans file_descr
@@ -274,7 +275,7 @@ let alpn tls =
 let with_tls ?(parallel = true) ?stop
     ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) tls_config
-    ~handler:user's_handler sockaddr =
+    ?upgrade ~handler:user's_handler sockaddr =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
@@ -293,12 +294,12 @@ let with_tls ?(parallel = true) ?stop
               | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
                   Log.debug (fun m -> m "Start a h2 request handler");
                   h2s_server_connection ~config:h2 ~user's_error_handler
-                    ~user's_handler tls_flow
+                    ?upgrade ~user's_handler tls_flow
               | `Both (config, _), Some "http/1.1"
               | `HTTP_1_1 config, (Some "http/1.1" | None) ->
                   Log.debug (fun m -> m "Start a http/1.1 request handler");
                   https_1_1_server_connection ~config ~user's_error_handler
-                    ~user's_handler tls_flow
+                    ?upgrade ~user's_handler tls_flow
               | `Both _, None -> assert false
               | _, Some _protocol -> assert false
             end
@@ -320,3 +321,94 @@ let with_tls ?(parallel = true) ?stop
   Miou_unix.bind_and_listen ?backlog socket sockaddr;
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
   go (Miou.orphans ()) socket
+
+module Websocket_connection = struct
+  (* make it match Runtime.S signature *)
+  include H1_ws.Server_connection
+
+  let next_read_operation t =
+    (next_read_operation t :> [ `Read | `Close | `Upgrade | `Yield ])
+
+  let next_write_operation t =
+    (next_write_operation t
+      :> [ `Write of Bigstringaf.t Faraday.iovec list
+         | `Close of int
+         | `Yield
+         | `Upgrade ])
+
+  let yield_reader _t _k = assert false
+
+  let report_exn _t exn =
+    Log.err (fun m -> m "websocket runtime: report_exn");
+    raise exn
+end
+
+module D = Runtime.Make (TCP_and_H1) (Websocket_connection)
+module Bstream = Bstream
+
+type elt =
+  ([ `Connection_close
+   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Other
+   | `Ping
+   | `Pong ]
+  * bytes)
+  option
+  Bstream.t
+
+open H1_ws
+
+let write_websocket oc wsd =
+  let write () =
+    match Bstream.get oc with
+    | None -> `Stop
+    | Some (kind, data) -> (
+        match kind with
+        | `Connection_close -> `Stop
+        | `Ping -> Wsd.send_ping wsd; `Continue
+        | `Pong -> Wsd.send_pong wsd; `Continue
+        | `Other -> failwith "Unsupported frame of kind `Other"
+        | `Msg (kind, is_fin) ->
+            let len = Bytes.length data in
+            Wsd.send_bytes wsd ~kind ~is_fin data ~off:0 ~len;
+            `Continue)
+  in
+  let rec go () =
+    match write () with `Stop -> Wsd.close wsd; () | `Continue -> go ()
+  in
+  go
+
+let websocket_handler ic ivar wsd =
+  ignore (Miou.Computation.try_return ivar wsd);
+  let frame_handler ~opcode ~is_fin bstr ~off ~len =
+    let data =
+      let s = Bigstringaf.substring bstr ~off ~len in
+      String.to_bytes s
+    in
+    let v =
+      match opcode with
+      | `Other _ -> (`Other, data)
+      | #Websocket.Opcode.standard_control as kind -> (kind, data)
+      | #Websocket.Opcode.standard_non_control as kind ->
+          (`Msg (kind, is_fin), data)
+    in
+    Bstream.put ic (Some v)
+  in
+  let eof () = Bstream.put ic None in
+  Websocket.{ frame_handler; eof }
+
+let websocket_upgrade ~fn flow =
+  let ic = Bstream.create 0x100 None in
+  let oc = Bstream.create 0x100 None in
+  let ivar = Miou.Computation.create () in
+  let websocket_handler = websocket_handler ic ivar in
+  let conn =
+    H1_ws.Server_connection.create ~websocket_handler
+    (* wsd -> input_handlers *)
+  in
+  let runtime's_prm = D.run conn flow in
+  let wsd = Miou.Computation.await_exn ivar in
+  let writer = Miou.async (write_websocket oc wsd) in
+  let user's_handler = Miou.async @@ fun () -> fn ic oc in
+  Miou.await_all [ runtime's_prm; user's_handler; writer ]
+  |> List.iter (function Ok () -> () | Error exn -> raise exn)

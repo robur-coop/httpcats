@@ -20,8 +20,7 @@ let reporter ppf =
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
-
-(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
+let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
@@ -95,6 +94,13 @@ let resp =
   in
   Response.create ~headers `OK
 
+let sec_websocket_accept key =
+  let s = key ^ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" in
+  s
+  |> Digestif.SHA1.digest_string
+  |> Digestif.SHA1.to_raw_string
+  |> Base64.encode_string
+
 let[@warning "-8"] handler _
     (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
   let open H1 in
@@ -104,13 +110,44 @@ let[@warning "-8"] handler _
       let body = Reqd.request_body reqd in
       Body.Reader.close body;
       Reqd.respond_with_string reqd resp text
+  | "/websocket" -> (
+      (* TODO only allow a client to upgrade once *)
+      match Headers.get request.headers "sec-websocket-key" with
+      | None -> failwith "bad headers"
+      | Some key ->
+          let hdrs =
+            [
+              ("connection", "upgrade"); ("upgrade", "websocket")
+            ; ("sec-websocket-accept", sec_websocket_accept key)
+            ]
+          in
+          let hdrs = Headers.of_list hdrs in
+          Reqd.respond_with_upgrade reqd hdrs)
   | _ ->
       let headers = Headers.of_list [ ("content-length", "0") ] in
       let resp = Response.create ~headers `Not_found in
       Reqd.respond_with_string reqd resp ""
 
-let server stop sockaddr = Httpcats.Server.clear ~stop ~handler sockaddr
-let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
+let src = Logs.Src.create "examples/server.ml"
+
+module Log = (val Logs.src_log src : Logs.LOG)
+module Bstream = Httpcats.Server.Bstream
+
+let echo_handler ic oc =
+  let rec loop () =
+    let opt = Bstream.get ic in
+    Bstream.put oc opt;
+    Option.iter (fun _v -> loop ()) opt
+  in
+  loop ()
+
+let upgrade (flow : Httpcats.Miou_flow.TCP.t) =
+  Httpcats.Server.websocket_upgrade ~fn:echo_handler flow
+
+let server stop sockaddr =
+  Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr
+
+(*let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore*)
 
 let () =
   let addr = sockaddr_of_arguments () in

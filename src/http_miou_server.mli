@@ -35,9 +35,24 @@ val clear :
   -> ?backlog:int
   -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
+  -> ?upgrade:(Miou_unix.file_descr -> unit)
   -> handler:handler
   -> Unix.sockaddr
   -> unit
+
+module Bstream = Bstream
+
+type elt =
+  ([ `Connection_close
+   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Other
+   | `Ping
+   | `Pong ]
+  * bytes)
+  option
+  Bstream.t
+
+val websocket_upgrade : fn:(elt -> elt -> unit) -> Miou_unix.file_descr -> unit
 
 val with_tls :
      ?parallel:bool
@@ -50,6 +65,7 @@ val with_tls :
   -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
   -> Tls.Config.server
+  -> ?upgrade:(Tls_miou_unix.t -> unit)
   -> handler:handler
   -> Unix.sockaddr
   -> unit

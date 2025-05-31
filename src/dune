@@ -7,11 +7,13 @@
   http_miou_client
   http_miou_server
   flow
+  bstream
   runtime)
  (libraries
   ca-certs
   happy-eyeballs-miou-unix
   dns-client-miou-unix
   h1
+  h1-ws
   h2
   tls-miou-unix))
