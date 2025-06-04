@@ -9,7 +9,7 @@ type 'a t = {
   ; non_full: Miou.Condition.t
 }
 
-let create size =
+let create size : 'a t =
   let lock = Miou.Mutex.create () in
   let non_empty = Miou.Condition.create () in
   let non_full = Miou.Condition.create () in

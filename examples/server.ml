@@ -131,12 +131,9 @@ let[@warning "-8"] handler _
 let src = Logs.Src.create "examples/server.ml"
 
 module Log = (val Logs.src_log src : Logs.LOG)
-module Bstream = Httpcats.Server.Bstream
 
-let echo_handler ic oc =
-  let rec loop () =
-    Bstream.get ic |> Option.iter (fun v -> Bstream.put oc v; loop ())
-  in
+let echo_handler get put =
+  let rec loop () = get () |> Option.iter (fun v -> put v; loop ()) in
   loop ()
 
 let upgrade flow =

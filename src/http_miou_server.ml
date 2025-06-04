@@ -350,13 +350,12 @@ module E = Runtime.Make (Tls_miou_unix) (Websocket_connection)
 module Bstream = Bstream
 
 type elt =
-  ([ `Connection_close
-   | `Msg of H1.Websocket.Opcode.standard_non_control * bool
-   | `Other
-   | `Ping
-   | `Pong ]
-  * bytes)
-  Bstream.t
+  [ `Connection_close
+  | `Msg of H1.Websocket.Opcode.standard_non_control * bool
+  | `Other
+  | `Ping
+  | `Pong ]
+  * bytes
 
 open H1
 open H1.Websocket
@@ -466,7 +465,9 @@ let websocket_upgrade ?stop ~fn flow =
   in
   let wsd = Miou.Computation.await_exn ivar in
   let writer = Miou.async (write_websocket oc stop wsd) in
-  let user's_handler = Miou.async @@ fun () -> fn ic oc in
+  let user's_handler =
+    Miou.async @@ fun () -> fn (fun () -> Bstream.get ic) (Bstream.put oc)
+  in
   let close =
     Miou.async @@ fun () ->
     Ws_stop.on_close stop @@ fun received emitted ->
