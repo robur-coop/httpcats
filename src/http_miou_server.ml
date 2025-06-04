@@ -326,7 +326,7 @@ let with_tls ?(parallel = true) ?stop
 
 module Websocket_connection = struct
   (* make it match Runtime.S signature *)
-  include H1_ws.Server_connection
+  include H1.Websocket.Server_connection
 
   let next_read_operation t =
     (next_read_operation t :> [ `Read | `Close | `Upgrade | `Yield ])
@@ -351,14 +351,15 @@ module Bstream = Bstream
 
 type elt =
   ([ `Connection_close
-   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Msg of H1.Websocket.Opcode.standard_non_control * bool
    | `Other
    | `Ping
    | `Pong ]
   * bytes)
   Bstream.t
 
-open H1_ws
+open H1
+open H1.Websocket
 
 module Ws_stop = struct
   (* TODO do we need the lock? re-use type stop? *)
@@ -441,12 +442,12 @@ let websocket_handler ic ivar stop wsd =
         Bstream.put ic (`Connection_close, data);
         Ws_stop.set_received stop;
         Bstream.close ic
-    | #Websocket.Opcode.standard_control as kind -> Bstream.put ic (kind, data)
-    | #Websocket.Opcode.standard_non_control as kind ->
+    | #Opcode.standard_control as kind -> Bstream.put ic (kind, data)
+    | #Opcode.standard_non_control as kind ->
         Bstream.put ic (`Msg (kind, is_fin), data)
   in
   let eof () = Ws_stop.set_eof stop; () in
-  Websocket.{ frame_handler; eof }
+  { frame_handler; eof }
 
 let websocket_upgrade ?stop ~fn flow =
   let ic = Bstream.create 0x100 in
@@ -455,7 +456,7 @@ let websocket_upgrade ?stop ~fn flow =
   let stop = match stop with None -> Ws_stop.create () | Some stop -> stop in
   let websocket_handler = websocket_handler ic ivar stop in
   let conn =
-    H1_ws.Server_connection.create ~websocket_handler
+    Websocket.Server_connection.create ~websocket_handler
     (* wsd -> input_handlers *)
   in
   let runtime's_prm =

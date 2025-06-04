@@ -61,7 +61,7 @@ module Bstream = Bstream
 
 type elt =
   ([ `Connection_close
-   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
+   | `Msg of H1.Websocket.Opcode.standard_non_control * bool
    | `Other
    | `Ping
    | `Pong ]
