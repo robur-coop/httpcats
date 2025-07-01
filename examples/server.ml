@@ -94,8 +94,7 @@ let resp =
   in
   Response.create ~headers `OK
 
-let sec_websocket_accept key =
-  let s = key ^ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" in
+let sha1 s =
   s
   |> Digestif.SHA1.digest_string
   |> Digestif.SHA1.to_raw_string
@@ -112,16 +111,10 @@ let[@warning "-8"] handler _
       Reqd.respond_with_string reqd resp text
   | "/websocket" -> (
       (* TODO only allow a client to upgrade once *)
-      match Headers.get request.headers "sec-websocket-key" with
-      | None -> failwith "bad headers"
-      | Some key ->
-          let hdrs =
-            [
-              ("connection", "upgrade"); ("upgrade", "websocket")
-            ; ("sec-websocket-accept", sec_websocket_accept key)
-            ]
-          in
-          let hdrs = Headers.of_list hdrs in
+      match Websocket.Handshake.get_nonce request with
+      | None -> failwith "no `sec-websocket-key` header"
+      | Some nonce ->
+          let hdrs = Websocket.Handshake.server_headers ~sha1 ~nonce in
           Reqd.respond_with_upgrade reqd hdrs)
   | _ ->
       let headers = Headers.of_list [ ("content-length", "0") ] in
