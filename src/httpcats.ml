@@ -258,7 +258,7 @@ let http_1_1_writer body seq () =
   next seq
 
 let[@warning "-8"] single_http_1_1_request ?(config = H1.Config.default) flow
-    cfg ~fn acc =
+    cfg ~f:fn acc =
   let contents_length =
     match cfg.body with
     | Some (String str) -> Some (Some (String.length str))
@@ -318,8 +318,8 @@ let h2_writer body seq () =
   in
   next seq `Written
 
-let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg ~fn
-    acc =
+let[@warning "-8"] single_h2_request ?(config = H2.Config.default) flow cfg
+    ~f:fn acc =
   let contents_length =
     match cfg.body with
     | Some (String str) -> Some (Some (String.length str))
@@ -456,7 +456,7 @@ type config_for_a_request = {
 
 and tls_config = [ `Custom of Tls.Config.client | `Default of Tls.Config.client ]
 
-let single_request cfg ~fn acc =
+let single_request cfg ~f acc =
   let ( let* ) = Result.bind in
   let ( let+ ) x f = Result.map f x in
   let* tls, scheme, user_pass, host, port, path = decode_uri cfg.uri in
@@ -500,20 +500,20 @@ let single_request cfg ~fn acc =
   begin
     match (alpn_protocol flow, cfg.http_config) with
     | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
-        single_http_1_1_request ~config flow cfg' ~fn acc
-    | (Some `HTTP_1_1 | None), None -> single_http_1_1_request flow cfg' ~fn acc
-    | Some `H2, Some (`H2 config) -> single_h2_request ~config flow cfg' ~fn acc
+        single_http_1_1_request ~config flow cfg' ~f acc
+    | (Some `HTTP_1_1 | None), None -> single_http_1_1_request flow cfg' ~f acc
+    | Some `H2, Some (`H2 config) -> single_h2_request ~config flow cfg' ~f acc
     | None, Some (`H2 _) ->
         Log.warn (fun m ->
             m "no ALPN protocol (choose http/1.1) where user forces h2");
-        single_http_1_1_request flow cfg' ~fn acc
-    | Some `H2, None -> single_h2_request flow cfg' ~fn acc
+        single_http_1_1_request flow cfg' ~f acc
+    | Some `H2, None -> single_h2_request flow cfg' ~f acc
     | Some `H2, Some (`HTTP_1_1 _) ->
         Log.warn (fun m -> m "ALPN protocol is h2 where user forces http/1.1");
-        single_h2_request flow cfg' ~fn acc
+        single_h2_request flow cfg' ~f acc
     | Some `HTTP_1_1, Some (`H2 _) ->
         Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
-        single_http_1_1_request flow cfg' ~fn acc
+        single_http_1_1_request flow cfg' ~f acc
   end
   |> open_client_error
 
@@ -529,7 +529,7 @@ let memoize = function
 
 let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?(resolver = `System) ~fn ~uri acc =
+    ?(resolver = `System) ~f ~uri acc =
   let tls_config =
     match tls_config with
     | Some cfg -> Ok (`Custom cfg)
@@ -564,14 +564,14 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ; uri
     }
   in
-  if not follow_redirect then single_request cfg ~fn acc
+  if not follow_redirect then single_request cfg ~f acc
   else
     let ( let* ) = Result.bind in
     let rec go count uri =
       if count = 0 then Error (`Msg "Redirect limit exceeded")
       else
         let cfg = { cfg with uri; body= Option.map memoize cfg.body } in
-        match single_request cfg ~fn acc with
+        match single_request cfg ~f acc with
         | Error _ as err -> err
         | Ok (resp, result) ->
             if Status.is_redirection resp.status then
@@ -591,9 +591,9 @@ let[@inline always] open_error = function
 (* XXX(dinosaure): really? to open polymorphic variant... *)
 let[@inline always] request ?config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?(resolver = `System) ~fn ~uri acc =
+    ?(resolver = `System) ~f ~uri acc =
   request ?config ?tls_config ?authenticator ~meth ~headers ?body ~max_redirect
-    ~follow_redirect ~resolver ~fn ~uri acc
+    ~follow_redirect ~resolver ~f ~uri acc
   |> open_error
 
 let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~meth ~uri
