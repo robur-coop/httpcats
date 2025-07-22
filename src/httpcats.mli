@@ -97,7 +97,7 @@ val request :
   -> ?follow_redirect:bool
   -> ?resolver:
        [ `Happy of Happy_eyeballs_miou_unix.t | `User of resolver | `System ]
-  -> f:'a handler
+  -> fn:'a handler
   -> uri:string
   -> 'a
   -> (response * 'a, [> error ]) result
@@ -112,7 +112,7 @@ val request :
     [GET] method is chosen (see {!module:H2.Method.t} for more details).
 
     The user can specify fields (via [headers]) in addition to those added by
-    [httpcats] - [httpcats] will never replace your defined fields. By default,
+    [httpcats] — [httpcats] will never replace your defined fields. By default,
     [httpcats] attempts to set [User-Agent], [Host] (according to the given
     [uri]), [Content-Length] & [Connection] or [Transfer-Encoding] according to
     the [body] argument. [:authority] is also added if you wish to use version 2
