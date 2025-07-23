@@ -449,6 +449,7 @@ let websocket_handler ic ivar stop wsd =
   { frame_handler; eof }
 
 let websocket_upgrade ?stop ~fn flow =
+  (* TODO(upgrade) what size should it be? *)
   let ic = Bstream.create 0x100 in
   let oc = Bstream.create 0x100 in
   let ivar = Miou.Computation.create () in
@@ -478,10 +479,10 @@ let websocket_upgrade ?stop ~fn flow =
     else (
       Log.debug (fun m -> m "websocket unclean close");
       (* we need to close the runtime's writer here
-               [Wsd.close] close the writer and also write a close frame *)
+         [Wsd.close] close the writer and also write a close frame *)
       Wsd.close wsd;
       (* ic and oc may not have been closed
-               we halt instead of close to disregard any data left on the streams *)
+         we halt instead of close to disregard any data left on the streams *)
       Bstream.halt ic;
       Bstream.halt oc;
       ())
