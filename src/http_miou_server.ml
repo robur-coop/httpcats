@@ -53,6 +53,8 @@ module Method = H2.Method
 module Headers = H2.Headers
 module Status = H2.Status
 
+type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
+
 type request = {
     meth: Method.t
   ; target: string
@@ -324,7 +326,7 @@ let with_tls ?(parallel = true) ?stop
 
 module Websocket_connection = struct
   (* make it match Runtime.S signature *)
-  include H1_ws.Server_connection
+  include H1.Websocket.Server_connection
 
   let next_read_operation t =
     (next_read_operation t :> [ `Read | `Close | `Upgrade | `Yield ])
@@ -344,71 +346,146 @@ module Websocket_connection = struct
 end
 
 module D = Runtime.Make (TCP_and_H1) (Websocket_connection)
+module E = Runtime.Make (Tls_miou_unix) (Websocket_connection)
 module Bstream = Bstream
 
 type elt =
-  ([ `Connection_close
-   | `Msg of H1_ws.Websocket.Opcode.standard_non_control * bool
-   | `Other
-   | `Ping
-   | `Pong ]
-  * bytes)
-  option
-  Bstream.t
+  [ `Connection_close
+  | `Msg of H1.Websocket.Opcode.standard_non_control * bool
+  | `Other
+  | `Ping
+  | `Pong ]
+  * bytes
 
-open H1_ws
+open H1
+open H1.Websocket
 
-let write_websocket oc wsd =
-  let write () =
-    match Bstream.get oc with
-    | None -> `Stop
-    | Some (kind, data) -> (
-        match kind with
-        | `Connection_close -> `Stop
-        | `Ping -> Wsd.send_ping wsd; `Continue
-        | `Pong -> Wsd.send_pong wsd; `Continue
-        | `Other -> failwith "Unsupported frame of kind `Other"
-        | `Msg (kind, is_fin) ->
-            let len = Bytes.length data in
-            Wsd.send_bytes wsd ~kind ~is_fin data ~off:0 ~len;
-            `Continue)
-  in
+module Ws_stop = struct
+  (* TODO do we need the lock? re-use type stop? *)
+  type t = {
+      lock: Miou.Mutex.t
+    ; cond: Miou.Condition.t
+    ; mutable received: bool
+    ; mutable emitted: bool
+    ; mutable eof: bool
+  }
+
+  let create () =
+    {
+      lock= Miou.Mutex.create ()
+    ; cond= Miou.Condition.create ()
+    ; received= false
+    ; emitted= false
+    ; eof= false
+    }
+
+  let set_received t =
+    Miou.Mutex.protect t.lock @@ fun () ->
+    t.received <- true;
+    Miou.Condition.signal t.cond
+
+  let set_emmited t =
+    Miou.Mutex.protect t.lock @@ fun () ->
+    t.emitted <- true;
+    Miou.Condition.signal t.cond
+
+  let set_eof t =
+    Miou.Mutex.protect t.lock @@ fun () ->
+    t.eof <- true;
+    Miou.Condition.signal t.cond
+
+  let on_close t f =
+    Miou.Mutex.protect t.lock @@ fun () ->
+    while not ((t.received && t.emitted) || t.eof) do
+      Miou.Condition.wait t.cond t.lock
+    done;
+    f t.received t.emitted
+end
+
+type ws_stop = Ws_stop.t
+
+let ws_stop () = Ws_stop.create ()
+let ws_switch o = Ws_stop.set_eof o
+
+let write_websocket oc stop wsd =
   let rec go () =
-    match write () with `Stop -> Wsd.close wsd; () | `Continue -> go ()
+    match Bstream.get oc with
+    | None -> ()
+    | Some (kind, data) ->
+        begin
+          match kind with
+          | `Other -> failwith "Unsupported frame of kind `Other"
+          | `Connection_close ->
+              Wsd.close wsd; Bstream.close oc; Ws_stop.set_emmited stop; ()
+          | `Ping -> Wsd.send_ping wsd
+          | `Pong -> Wsd.send_pong wsd
+          | `Msg (kind, is_fin) ->
+              let len = Bytes.length data in
+              Wsd.send_bytes wsd ~kind ~is_fin data ~off:0 ~len;
+              ()
+        end;
+        go ()
   in
   go
 
-let websocket_handler ic ivar wsd =
+let websocket_handler ic ivar stop wsd =
   ignore (Miou.Computation.try_return ivar wsd);
   let frame_handler ~opcode ~is_fin bstr ~off ~len =
     let data =
       let s = Bigstringaf.substring bstr ~off ~len in
       String.to_bytes s
     in
-    let v =
-      match opcode with
-      | `Other _ -> (`Other, data)
-      | #Websocket.Opcode.standard_control as kind -> (kind, data)
-      | #Websocket.Opcode.standard_non_control as kind ->
-          (`Msg (kind, is_fin), data)
-    in
-    Bstream.put ic (Some v)
+    match opcode with
+    | `Other _ -> Bstream.put ic (`Other, data)
+    | `Connection_close ->
+        Bstream.put ic (`Connection_close, data);
+        Ws_stop.set_received stop;
+        Bstream.close ic
+    | #Opcode.standard_control as kind -> Bstream.put ic (kind, data)
+    | #Opcode.standard_non_control as kind ->
+        Bstream.put ic (`Msg (kind, is_fin), data)
   in
-  let eof () = Bstream.put ic None in
-  Websocket.{ frame_handler; eof }
+  let eof () = Ws_stop.set_eof stop; () in
+  { frame_handler; eof }
 
-let websocket_upgrade ~fn flow =
-  let ic = Bstream.create 0x100 None in
-  let oc = Bstream.create 0x100 None in
+let websocket_upgrade ?stop ~fn flow =
+  (* TODO(upgrade) what size should it be? *)
+  let ic = Bstream.create 0x100 in
+  let oc = Bstream.create 0x100 in
   let ivar = Miou.Computation.create () in
-  let websocket_handler = websocket_handler ic ivar in
+  let stop = match stop with None -> Ws_stop.create () | Some stop -> stop in
+  let websocket_handler = websocket_handler ic ivar stop in
   let conn =
-    H1_ws.Server_connection.create ~websocket_handler
+    Websocket.Server_connection.create ~websocket_handler
     (* wsd -> input_handlers *)
   in
-  let runtime's_prm = D.run conn flow in
+  let runtime's_prm =
+    match flow with
+    | `Tcp flow -> D.run conn flow
+    | `Tls flow -> E.run conn flow
+  in
   let wsd = Miou.Computation.await_exn ivar in
-  let writer = Miou.async (write_websocket oc wsd) in
-  let user's_handler = Miou.async @@ fun () -> fn ic oc in
-  Miou.await_all [ runtime's_prm; user's_handler; writer ]
+  let writer = Miou.async (write_websocket oc stop wsd) in
+  let user's_handler =
+    Miou.async @@ fun () -> fn (fun () -> Bstream.get ic) (Bstream.put oc)
+  in
+  let close =
+    Miou.async @@ fun () ->
+    Ws_stop.on_close stop @@ fun received emitted ->
+    if received && emitted then (
+      Log.debug (fun m -> m "websocket clean close");
+      (* ic and oc have already been closed *)
+      ())
+    else (
+      Log.debug (fun m -> m "websocket unclean close");
+      (* we need to close the runtime's writer here
+         [Wsd.close] close the writer and also write a close frame *)
+      Wsd.close wsd;
+      (* ic and oc may not have been closed
+         we halt instead of close to disregard any data left on the streams *)
+      Bstream.halt ic;
+      Bstream.halt oc;
+      ())
+  in
+  Miou.await_all [ runtime's_prm; user's_handler; writer; close ]
   |> List.iter (function Ok () -> () | Error exn -> raise exn)
