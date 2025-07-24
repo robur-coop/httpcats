@@ -108,6 +108,7 @@ val request :
   -> ?follow_redirect:bool
   -> ?resolver:
        [ `Happy of Happy_eyeballs_miou_unix.t | `User of resolver | `System ]
+  -> ?keep_cookies:bool
   -> fn:'a handler
   -> uri:string
   -> 'a

@@ -157,8 +157,8 @@ type config = {
 let prep_http_1_1_headers cfg body =
   let hdr = H1.Headers.of_list cfg.headers in
   let add = H1.Headers.add_unless_exists in
-  let hdr = add hdr "user-agent" user_agent in
   let hdr = add hdr "host" cfg.host in
+  let hdr = add hdr "user-agent" user_agent in
   let hdr =
     match body with
     | Some (Some len) ->
@@ -521,16 +521,22 @@ let single_request cfg ~fn acc =
 let string str = String str
 let stream seq = Stream seq
 
-(* NOTE(dinosaure): we must [memoize] (and ensure that the given [seq] is used
-   only one time) the body if we follow redirections where we will try, for each
-   redirections, to send the body. *)
 let memoize = function
   | String _ as body -> body
   | Stream seq -> Stream (Seq.memoize seq)
 
+let collect_cookies (resp : response) =
+  let fn key value acc =
+    (* TODO(dinosaure): filter cookies. *)
+    match (String.lowercase_ascii key, String.split_on_char ';' value) with
+    | "set-cookie", ([ value ] | value :: _) -> value :: acc
+    | _ -> acc
+  in
+  Headers.fold ~f:fn ~init:[] resp.headers
+
 let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?(resolver = `System) ~fn ~uri acc =
+    ?(resolver = `System) ?(keep_cookies = true) ~fn ~uri acc =
   let tls_config =
     match tls_config with
     | Some cfg -> Ok (`Custom cfg)
@@ -554,24 +560,19 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
           end
           authenticator
   in
-  let cfg =
-    {
-      resolver
-    ; http_config
-    ; tls_config
-    ; meth
-    ; headers
-    ; body= Option.map memoize body
-    ; uri
-    }
-  in
-  if not follow_redirect then single_request cfg ~fn acc
+  (* NOTE(dinosaure): the given stream can be ephemeral and redo the dispenser
+     when we would like to send data back to another destination due to
+     redirection can fail. We must [Seq.memoize] the given stream to be sure to
+     have a persistent sequence and be able to consume it more than once. *)
+  let body = Option.map memoize body in
+  if not follow_redirect then
+    let cfg = { resolver; http_config; tls_config; meth; headers; body; uri } in
+    single_request cfg ~fn acc
   else
     let ( let* ) = Result.bind in
-    let rec go count uri =
+    let rec go count cfg =
       if count = 0 then Error (`Msg "Redirect limit exceeded")
       else
-        let cfg = { cfg with uri; body= Option.map memoize cfg.body } in
         match single_request cfg ~fn acc with
         | Error _ as err -> err
         | Ok (resp, result) ->
@@ -579,11 +580,20 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
               match Headers.get resp.headers "location" with
               | Some location ->
                   let* uri = resolve_location ~uri ~location in
-                  go (pred count) uri
+                  let cookies = collect_cookies resp in
+                  let headers =
+                    if keep_cookies then
+                      List.fold_left
+                        (fun acc value -> ("Cookie", value) :: acc)
+                        headers cookies
+                    else headers
+                  in
+                  go (pred count) { cfg with uri; headers }
               | None -> Ok (resp, result)
             else Ok (resp, result)
     in
-    go max_redirect uri
+    let cfg = { resolver; http_config; tls_config; meth; headers; body; uri } in
+    go max_redirect cfg
 
 let[@inline always] open_error = function
   | Ok _ as v -> v
@@ -592,9 +602,9 @@ let[@inline always] open_error = function
 (* XXX(dinosaure): really? to open polymorphic variant... *)
 let[@inline always] request ?config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?(resolver = `System) ~fn ~uri acc =
+    ?(resolver = `System) ?keep_cookies ~fn ~uri acc =
   request ?config ?tls_config ?authenticator ~meth ~headers ?body ~max_redirect
-    ~follow_redirect ~resolver ~fn ~uri acc
+    ~follow_redirect ~resolver ?keep_cookies ~fn ~uri acc
   |> open_error
 
 let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~meth ~uri
