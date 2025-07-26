@@ -8,7 +8,6 @@
  (modules test)
  (libraries
   mirage-crypto-rng-miou-unix
-  rresult
   logs.fmt
   fmt.tty
   logs.threaded

@@ -9,9 +9,9 @@ license: "BSD-3-clause"
 depends: [
   "ocaml" {>= "5.0.0"}
   "dune" {>= "2.0.0"}
-  "logs"
+  "logs" {with-test}
   "miou" {>= "0.3.0"}
-  "fmt" {>= "0.9.0"}
+  "fmt" {>= "0.9.0" & with-test}
   "h2" {>= "0.13.0"}
   "h1" {>= "1.0.0"}
   "ca-certs"
