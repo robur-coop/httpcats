@@ -1,58 +1,65 @@
-# A simple HTTP client/server (http/1.1 & h2) with [Miou][miou]
+# A simple HTTP client/server (HTTP/1.1 & h2) with [Miou][miou]
 
-httpcats (http + cats because [miou][miou]) is an implementation of an http
-client and server (http/1.1 & h2) in pure OCaml. This implementation is based on
+`httpcats` (HTTP + cats because [miou][miou]) is an implementation of an HTTP
+client and server (HTTP/1.1 & h2) in pure OCaml. This implementation is based on
 the [miou][miou] scheduler, [ocaml-dns][ocaml-dns] (for domain name resolution),
 [happy-eyeballs][happy-eyeballs] (to manage connections), [ocaml-tls][ocaml-tls]
 (for TLS protocol) & [mirage-crypto][mirage-crypto] (for cryptography),
 [ca-certs][ca-certs] to obtain system certificates and [h1][h1] and [h2][h2] to
-implement http protocols. In all, httpcats requires 58 packages (including
+implement HTTP protocols. In all, `httpcats` requires 58 packages (including
 `dune` & `ocamlfind`) for a single installation.
 
-That's a lot of packages!
+**U**: That's a lot of packages!
 
 That's what's needed to end up with a pure OCaml http client. `curl`, for
 example, has 13 dependencies and also contains implementations such as ftp or
 smtp that are not related to an http client. A comparison would therefore be
 difficult, you just have to choose your poison (OCaml or C?).
 
-However, there are other implementations of http client & server in OCaml.
+**U**: However, there are other implementations of HTTP client & server in
+OCaml. Why implement it yet again?
 
 These implementations don't use [miou], however. What's more, since
 [http-lwt-client], we're opposed to the (ultimately complex) feature of being
 able to choose the TLS implementation (although we understand the constraints
-some users may have in wanting to use OpenSSL) and prefer to offer an http
+some users may have in wanting to use OpenSSL) and prefer to offer an HTTP
 client that uses strictly [ocaml-tls][ocaml-tls]. Finally, we also want to have
 control over domain resolution, rather than having to use the system's resolver.
 
-So how does httpcats work?
+<hr />
+
+<tag id="fn1">**1**</tag>: Here, we point the finger at the software components
+[Conduit][conduit] and [Gluten][gluten], which perform dynamic and/or static
+dispatching of TLS layer implementations that we do not find suitable.
+
+**U**: So how does `httpcats` work?
 
 You need to initialize the random number generator required by `mirage-crypto`
 and `ocaml-tls` and make your request like this:
 ```ocaml
-let f _meta _resp () = function
+let fn _meta _resp () = function
   | Some str -> print_string str
   | None -> ()
 
 let () = Miou_unix.run @@ fun () ->
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  ignore (Httpcats.request ~f ~uri:"https://robur.coop/" ());
+  ignore (Httpcats.request ~fn ~uri:"https://robur.coop/" ());
   Mirage_crypto_rng_miou_unix.kill rng
 ```
 
 It's quite... simple. You can, of course, make `POST` requests, consume the
 response body in a more complex way (store it in a buffer, for example), process
 the received response and lots of other things like:
-- forcing the use of a version of the http protocol
-- define your own tls configuration
+- forcing the use of a version of the HTTP protocol
+- define your own TLS configuration
 - accept certain certificates (such as self-signed ones)
 - follow or not follow redirects
-- resolve domain names via `happy-eyeballs`
+- resolve domain names via `happy-eyeballs` & `ocaml-dns`
 
-What about the server?
+**U**: What about the server?
 
-You can also have an http/1.1 and h2 server (with tls and a certificate you can
-handle with [x509][x509]). As an example, here's a simple http/1.1 server:
+You can also have an HTTP/1.1 and h2 server (with TLS and a certificate you can
+handle with [x509][x509]). As an example, here's a simple HTTP/1.1 server:
 ```ocaml
 let text = "Hello World!"
 
@@ -98,76 +105,72 @@ $ ocamlfind opt -linkpkg -package digestif.c,httpcats server.ml
 $ MIOU_DOMAINS=2 ./a.out
 ```
 
-And what about performance?
+## Benchmarks
 
-httpcats & miou essentially want to take advantage of the domains available.
-Here are the results of a benchmark of `examples/server.ml` with [rewrk][rewrk]:
+Some contributors to the OCaml community wanted to benchmark different HTTP
+implementations in OCaml. You can find more details [here][discuss-benchmark].
+As for `httpcats`, a benchmark was developed and proposed
+[here][FrameworkBenchmarks].
 
-| threads (server) | threads (client) | connections / threads | requests/s |
-|------------------|------------------|-----------------------|------------|
-| 0                | 12               | 256                   | ~ 42k      |
-| 1                | 12               | 256                   | ~ 70k      |
-| 2                | 12               | 256                   | ~ 74k      |
-| 4                | 12               | 256                   | ~ 155k     |
-| 8                | 12               | 256                   | ~ 300k     |
-| 16               | 12               | 256                   | ~ 485k     |
-| MIOU_DOMAINS     | rewrk -t         | rewrk -c              |            |
+This benchmark tool has the advantage of being fairly reproducible. Here are
+the results between `httpun+eio` and `httpcats` (`h1+miou`) (on AMD Ryzen 9
+7950X 16-Core):
 
-`miou` is currently based on the simple idea that increasing the number of cores
-should make the service more available. So, the more domains available, the more
-`httpcats` is able to handle requests **in parallel**. It is for this reason
-that `httpcats` can easily outperform http server implementations just by
-increasing the number of domains.
+### `httpcats` (or `h1` + `miou`)
 
-For comparison, here's the result for [CoHTTP][cohttp] (which, this time, takes
-advantage of [io_uring][io_uring]):
+| clients | threads | latencyAvg | latencyMax | latencyStdev | totalRequests |
+|---------|---------|------------|------------|--------------|---------------|
+| 16      | 16      | 47.43us    | 2.27ms     | 38.48us      | 5303700       |
+| 32      | 32      | 71.73us    | 1.04ms     | 47.58us      | 7016729       |
+| 64      | 32      | 140.29us   | 5.72ms     | 121.50us     | 7658146       |
+| 128     | 32      | 279.73us   | 11.35ms    | 287.92us     | 7977306       |
+| 256     | 32      | 519.02us   | 16.89ms    | 330.20us     | 7816435       |
+| 512     | 32      | 1.06ms     | 37.42ms    | 534.14us     | 7409781       |
 
-| threads (server) | threads (client) | connections / threads | requests/s |
-|------------------|------------------|-----------------------|------------|
-|                  | 12               | 256                   | ~ 110k     |
+### `httpun` & `eio`
 
-Just like the choice between a pure http implementation in OCaml or curl, choose
-your poison! However, there are several things to note about this benchmark:
-1) `miou.unix` uses `select()` and our benchmarks clearly show that the
-   bottleneck concerns this system call. CoHTTP uses `io_uring`, which saves
-   passage between user space and the kernel. In this respect, there is clearly
-   an area for optimization for miou (`io_uring`) to avoid this bottleneck.
-2) CoHTTP uses a single domain to manage your requests. For the sake of
-   comparison and fair play, we should compare CoHTTP and httpcats with
-   `MIOU_DOMAINS=0`. This comparison shows that `io_uring` can be a way of
-   optimising miou's syscall management. However, we prefer the more obvious
-   reasoning of simply increasing the number of domains to manage more requests
-   to that of having to change/complement the implementation in order to manage
-   more requests.
-3) The request handling behavior of httpcats and CoHTTP may also differ.
-   httpcats can also handle the h2 protocol (which CoHTTP doesn't). In fact,
-   httpcats is based on an abstraction shared by [h1][h1] and [h2][h2], i.e.
-   abstraction by passing values which can effectively give rise to syscalls.
-   This is a different method to that proposed by CoHTTP, whose design uses
-   functors.
-4) The benchmark does not concern the TLS layer and, as mentioned above, CoHTTP
-   may, depending on your system, use OpenSSL where httpcats will only use
-   `ocaml-tls`.
+| clients | threads | latencyAvg | latencyMax | latencyStdev | totalRequests |
+|---------|---------|------------|------------|--------------|---------------|
+| 16      | 16      | 1.19ms     | 17.12ms    | 2.09ms       | 2966727       |
+| 32      | 32      | 0.91ms     | 17.49ms    | 1.65ms       | 5366296       |
+| 64      | 32      | 1.08ms     | 17.30ms    | 1.82ms       | 5919733       |
+| 128     | 32      | 1.16ms     | 18.62ms    | 1.76ms       | 6187300       |
+| 256     | 32      | 1.41ms     | 26.61ms    | 1.96ms       | 6604454       |
+| 512     | 32      | 1.84ms     | 32.37ms    | 2.23ms       | 6798222       |
 
-All this to say that these results should certainly be taken with a grain of
-salt. What can really be concluded about httpcats is its ability to stand
-shoulder to shoulder with other (C-based) server implementations - for example,
-on AMD Ryzen 9 7950X 16-Core, nginx can handle [178k req/s][nginx-benchmark].
+### Interpretations
 
-Finally, benchmarks (especially those concerning http) are difficult to make
-because they are hard to reproduce. So take the results as they come, but don't
-say that httpcats is faster than \<any-dumb-http-implementation\>.
+As we can see, `httpcats` performs **better** than `eio` (with `httpun`) in
+terms of latency and the number of requests it can handle per second.
 
-Finally, wouldn't this be the best http stack in OCaml?
+To be precise, `h1` and `httpun` are both forks of `httpaf` and the code is
+very similar. If we had to explain a difference between these two benchmarks,
+it would **not** be due to `h1` or `httpun`.
 
-It is for me, of course, but it may not be for you. The best way to find out is
-to test and compare according to your objectives (which are, of course,
-different from mine). The project is also experimental at this stage -
-production use could break the internet - which could be interesting. Just like
-miou, httpcats allows for a diversity of implementations and offers a choice
-that, while requiring knowledge and real reflection on the whys and wherefores,
-brings freedom because we're no longer locked into using just one and unique
-implementation!
+CoHTTP is not included in this benchmark because it is more a comparison
+between schedulers than implementations of the HTTP/1.1 protocol. In this case,
+`h1` and `httpun`, due to their similarities with `httpaf`, normally perform
+better than CoHTTP — you can see [the conference][httpaf-conf] about `httpaf`
+or the official [repository][httpaf]. These implementations also allow for
+support of the [`h2`][h2] protocol (which is not currently possible with
+CoHTTP).
+
+The real difference lies between `miou` and `eio` and their task management
+policies. For more details, please refer to [the Miou documentation][miou-doc]:
+overall, Miou offers more _poll points_ than Eio, which provides more
+opportunities to manage more clients. This is one of Miou's stated objectives:
+to be a scheduler designed for this type of service.
+
+<hr />
+
+<tag id="fn2">**2**</tag>: In the discussion thread presented above, there is
+also mention of `httpaf+lwt`, which performs even better than `httpcats`. It is
+specified that the use of domains in this benchmark is **not** safe.
+
+<tag id="fn3">**3**</tag>: It should be noted that `eio` uses
+[`io_uring`][io_uring] while Miou uses `select(3P)`. It is possible to improve
+Miou to use `epoll(7)` or `io_uring` (and make sure that `httpcats` uses this
+implementation) but, as it stands, `select()` is sufficient.
 
 [miou]: https://github.com/robur-coop/miou
 [ocaml-dns]: https://github.com/mirage/ocaml-dns
@@ -183,3 +186,10 @@ implementation!
 [cohttp]: https://github.com/mirage/ocaml-cohttp
 [rewrk]: https://github.com/lnx-search/rewrk
 [mirage-crypto]: https://github.com/mirage/mirage-crypto
+[miou-doc]: https://docs.osau.re/miou/
+[httpaf-conf]: https://watch.ocaml.org/w/b2KP5hMngXkyVU3z7yNLpG
+[httpaf]: https://github.com/inhabitedtype/httpaf
+[discuss-benchmark]: https://discuss.ocaml.org/t/lwt-multi-processing-much-more-performant-than-eio-multi-core/16395
+[FrameWorkBenchmarks]: https://github.com/TechEmpower/FrameworkBenchmarks/pull/10009
+[conduit]: https://github.com/mirage/ocaml-conduit
+[gluten]: https://github.com/anmonteiro/gluten
