@@ -15,4 +15,5 @@
   dns-client-miou-unix
   h1
   h2
+  bstr
   tls-miou-unix))

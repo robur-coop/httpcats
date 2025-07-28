@@ -15,6 +15,7 @@ depends: [
   "h2" {>= "0.13.0"}
   "h1" {>= "1.0.0"}
   "ca-certs"
+  "bstr"
   "tls-miou-unix" {>= "1.0.1"}
   "dns-client-miou-unix" {>= "9.0.0"}
   "happy-eyeballs-miou-unix"
