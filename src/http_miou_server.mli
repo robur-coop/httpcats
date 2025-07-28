@@ -57,24 +57,20 @@ val with_tls :
   -> Unix.sockaddr
   -> unit
 
-type elt =
-  [ `Connection_close
-  | `Msg of H1.Websocket.Opcode.standard_non_control * bool
-  | `Other
-  | `Ping
-  | `Pong ]
-  * bytes
+module Websocket : sig
+  type elt =
+    [ `Connection_close
+    | `Msg of H1.Websocket.Opcode.standard_non_control * bool
+    | `Other
+    | `Ping
+    | `Pong ]
+    * string
 
-type ws_stop
+  type ic = unit -> elt option
+  type oc = elt -> unit
+  type stop
 
-val ws_stop : unit -> ws_stop
-val ws_switch : ws_stop -> unit
-
-(* TODO(upgrade)
-   should not be called on H2 connection (?)
-   do we need stop or can we just close flow instead? *)
-val websocket_upgrade :
-     ?stop:ws_stop
-  -> fn:((unit -> elt option) -> (elt -> unit) -> unit)
-  -> flow
-  -> unit
+  val stop : unit -> stop
+  val switch : stop -> unit
+  val upgrade : ?stop:stop -> fn:(ic -> oc -> unit) -> flow -> unit
+end

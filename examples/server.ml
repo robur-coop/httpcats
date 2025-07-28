@@ -125,12 +125,12 @@ let src = Logs.Src.create "examples/server.ml"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-let echo_handler get put =
-  let rec loop () = get () |> Option.iter (fun v -> put v; loop ()) in
-  loop ()
-
 let upgrade flow =
-  Httpcats.Server.websocket_upgrade ~fn:echo_handler (`Tcp flow)
+  let fn get put =
+    let rec go () = match get () with Some v -> put v; go () | None -> () in
+    go ()
+  in
+  Httpcats.Server.Websocket.upgrade ~fn (`Tcp flow)
 
 let server stop sockaddr =
   Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr
