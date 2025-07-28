@@ -32,4 +32,5 @@ synopsis: "A simple HTTP client using h1, h2, and miou"
 available: [ arch != "x86_32" ]
 pin-depends: [
   [ "miou.dev" "git+https://github.com/robur-coop/miou.git#1f0bf804c61338b8d0bc7cf15dd1e65f9d5699b3" ]
+  [ "h1.dev" "git+https://github.com/robur-coop/ocaml-h1.git#263fdf3afa72966793ee70ef18102bb3a318a4cf" ]
 ]
