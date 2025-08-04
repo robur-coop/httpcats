@@ -20,8 +20,7 @@ let reporter ppf =
 
 let () = Fmt_tty.setup_std_outputs ~style_renderer:`Ansi_tty ~utf_8:true ()
 let () = Logs.set_reporter (reporter Fmt.stderr)
-
-(* let () = Logs.set_level ~all:true (Some Logs.Debug) *)
+let () = Logs.set_level ~all:true (Some Logs.Debug)
 let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 
@@ -95,6 +94,12 @@ let resp =
   in
   Response.create ~headers `OK
 
+let sha1 s =
+  s
+  |> Digestif.SHA1.digest_string
+  |> Digestif.SHA1.to_raw_string
+  |> Base64.encode_string
+
 let[@warning "-8"] handler _
     (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
   let open H1 in
@@ -104,13 +109,33 @@ let[@warning "-8"] handler _
       let body = Reqd.request_body reqd in
       Body.Reader.close body;
       Reqd.respond_with_string reqd resp text
+  | "/websocket" -> (
+      (* TODO only allow a client to upgrade once *)
+      match Websocket.Handshake.get_nonce request with
+      | None -> failwith "no `sec-websocket-key` header"
+      | Some nonce ->
+          let hdrs = Websocket.Handshake.server_headers ~sha1 ~nonce in
+          Reqd.respond_with_upgrade reqd hdrs)
   | _ ->
       let headers = Headers.of_list [ ("content-length", "0") ] in
       let resp = Response.create ~headers `Not_found in
       Reqd.respond_with_string reqd resp ""
 
-let server stop sockaddr = Httpcats.Server.clear ~stop ~handler sockaddr
-let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
+let src = Logs.Src.create "examples/server.ml"
+
+module Log = (val Logs.src_log src : Logs.LOG)
+
+let upgrade flow =
+  let fn get put =
+    let rec go () = match get () with Some v -> put v; go () | None -> () in
+    go ()
+  in
+  Httpcats.Server.Websocket.upgrade ~fn (`Tcp flow)
+
+let server stop sockaddr =
+  Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr
+
+(*let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore*)
 
 let () =
   let addr = sockaddr_of_arguments () in

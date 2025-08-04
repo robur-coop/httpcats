@@ -7,6 +7,7 @@
   http_miou_client
   http_miou_server
   flow
+  bstream
   runtime)
  (libraries
   ca-certs
@@ -14,4 +15,5 @@
   dns-client-miou-unix
   h1
   h2
+  bstr
   tls-miou-unix))

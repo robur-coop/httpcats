@@ -11,6 +11,8 @@ type stop
 val stop : unit -> stop
 val switch : stop -> unit
 
+type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
+
 type request = {
     meth: Method.t
   ; target: string
@@ -25,8 +27,7 @@ type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 type error_handler =
   [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
 
-type handler =
-  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
+type handler = flow -> reqd -> unit
 
 val clear :
      ?parallel:bool
@@ -35,6 +36,7 @@ val clear :
   -> ?backlog:int
   -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
+  -> ?upgrade:(Miou_unix.file_descr -> unit)
   -> handler:handler
   -> Unix.sockaddr
   -> unit
@@ -50,6 +52,25 @@ val with_tls :
   -> ?ready:unit Miou.Computation.t
   -> ?error_handler:error_handler
   -> Tls.Config.server
+  -> ?upgrade:(Tls_miou_unix.t -> unit)
   -> handler:handler
   -> Unix.sockaddr
   -> unit
+
+module Websocket : sig
+  type elt =
+    [ `Connection_close
+    | `Msg of H1.Websocket.Opcode.standard_non_control * bool
+    | `Other
+    | `Ping
+    | `Pong ]
+    * string
+
+  type ic = unit -> elt option
+  type oc = elt -> unit
+  type stop
+
+  val stop : unit -> stop
+  val switch : stop -> unit
+  val upgrade : ?stop:stop -> fn:(ic -> oc -> unit) -> flow -> unit
+end
