@@ -1,13 +1,10 @@
 (** HTTP client with Miou.
 
-    A HTTP client using the Miou scheduler. It does a single HTTP request
-    (though may follow redirects) to a remote uri. Both HTTP protocol 1.1 and
-    2.0 are supported. Both http and https (via the pure implementation
-    [ocaml-tls]) are supported. A connection is established via the
-    happy-eyeballs algorithm if provided. *)
-
-module Flow = Flow
-module Miou_flow = Http_miou_unix
+    [httpcats] is a HTTP client using the Miou scheduler. It does a single HTTP
+    request (though may follow redirects) to a remote URI. Both HTTP protocol
+    1.1 and 2.0 are supported. Both clear HTTP and HTTP with TLS (via the pure
+    implementation [ocaml-tls]) are supported. A connection is established via
+    the happy-eyeballs algorithm if provided. *)
 
 type error =
   [ `V1 of H1.Client_connection.error
@@ -15,28 +12,32 @@ type error =
   | `Protocol of string
   | `Msg of string
   | `Exn of exn ]
+(** The type of errors. *)
 
 val pp_error : error Fmt.t
 (** Pretty-printer of {!error}s. *)
 
 module Version = H1.Version
-(** Protocol Version
+(** Protocol Version.
 
     Consists of [major.minor], in H2 this is [2.0]. *)
 
 module Status = H2.Status
-(** Response Status codes
+(** Response Status codes.
 
     A three-digit integer, the result of the request. *)
 
 module Headers = H2.Headers
-(** Header fields
+(** Header fields.
 
     Case-insensitive key-value pairs. *)
 
 module Method = H2.Method
+(** Request methods. *)
 
 type request = { meth: Method.t; target: string; headers: Headers.t }
+(** A request consisting of a method (see {!module:Method}), a {i target} (the
+    path requested by the client) and a headers. *)
 
 type response = {
     version: Version.t
@@ -52,14 +53,14 @@ val pp_response : response Fmt.t
 
 (** A body, consisting to a basic string or a stream ([string Seq.t]). The last
     implies a
-    {{:https://en.wikipedia.org/wiki/Chunked_transfer_encoding}“Chunked”}
+    {{:https://en.wikipedia.org/wiki/Chunked_transfer_encoding}"Chunked"}
     transmission if not specified in the headers. *)
 type body = String of string | Stream of string Seq.t
 
 type meta = (Ipaddr.t * int) * Tls.Core.epoch_data option
 (** It may be interesting to know where the response comes from (the server's IP
     address and the configuration chosen during the TLS handshake). In this
-    sense, all this information is condensed into the meta type. *)
+    sense, all this information is condensed into the {i meta} type. *)
 
 type 'a handler = meta -> request -> response -> 'a -> string option -> 'a
 (** The handler is a function that is called each time a new part of the
@@ -79,6 +80,10 @@ type socket =
   * Ipaddr.t
   * int
   * Tls.Core.epoch_data option
+(** A socket is a connection initiated with the requested HTTP server (from an
+    URI). The socket can be supplemented with information such as the TLS
+    certificate used or the IP address of the server to which we are connected.
+*)
 
 type resolver =
      ?port:int
@@ -87,7 +92,10 @@ type resolver =
   -> (socket, [ `Msg of string ]) result
 
 val string : string -> body
+(** [string str] is a {!type:body} from a string. *)
+
 val stream : string Seq.t -> body
+(** [stream seq] is a {!type:body} from a sequence of bytes. *)
 
 val request :
      ?config:[ `HTTP_1_1 of H1.Config.t | `H2 of H2.Config.t ]
@@ -112,7 +120,7 @@ val request :
       content.
 
     You can specify the query method via the [meth] argument. By default, the
-    [GET] method is chosen (see {!module:H2.Method.t} for more details).
+    [GET] method is chosen (see {!type:Method.t} for more details).
 
     The user can specify fields (via [headers]) in addition to those added by
     [httpcats] — [httpcats] will never replace your defined fields. By default,
@@ -152,6 +160,17 @@ val request :
 
 module Client = Http_miou_client
 module Server = Http_miou_server
+
+module Flow = Flow
+(** [Flow] is the interface required by [httpcats] to implement the HTTP client
+    and the HTTP server. This interface is really close to what [Unix] can
+    provide. *)
+
+module Miou_flow = Http_miou_unix
+(** [Miou_flow] provides an implementation of {!Flow.S} from a TCP/IP connection
+    and an implementation of {!Flow.S} from a TLS connection (with [ocaml-tls]).
+    These are the implementations used by the HTTP client and HTTP server
+    implementations. *)
 
 (**/**)
 
