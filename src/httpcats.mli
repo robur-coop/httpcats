@@ -524,6 +524,25 @@ type 'a handler = meta -> request -> response -> 'a -> string option -> 'a
     [httpcats] from following redirects (default behaviour) by specifying
     [~follow_redirect:false]. *)
 
+(** {2:cookies [httpcats] and cookies}
+
+    There are redirection patterns where the server attempts to save a cookie
+    and redirect the user to another resource. In this case, it is necessary for
+    [httpcats] to keep the cookies from the first response in order to send them
+    back via the next request to the proposed redirection.
+
+    The user can {i filter} these cookies throughout the redirects and thus keep
+    some and delete others. The [~filter] argument allows you to specify what
+    you want to keep and what you want to reject between the cookies currently
+    used by [httpcats] and those that the server wants to add.
+
+    By default, [httpcats] keeps the latest version of all cookies given by the
+    server (whether they have expired or not). *)
+
+type filter =
+  (string * string) list -> Cookie.cookie list -> (string * string) list
+(** Type of functions to filter cookies. *)
+
 val request :
      ?config:[ `HTTP_1_1 of H1.Config.t | `H2 of H2.Config.t ]
   -> ?tls_config:Tls.Config.client
@@ -535,6 +554,7 @@ val request :
   -> ?follow_redirect:bool
   -> ?resolver:
        [ `Happy of Happy_eyeballs_miou_unix.t | `User of resolver | `System ]
+  -> ?cookies:filter
   -> fn:'a handler
   -> uri:string
   -> 'a
@@ -560,6 +580,8 @@ val request :
       regard to redirection (see {!section:redirections}).
     - [?resolver] allows you to specify the domain name resolution mechanism
       (see {!section:dns})
+    - [?cookies] allows the user to control which cookies must be kept during
+      redirections (see {!section:cookies}).
     - [fn] & ['a] handles the responses received by the server (see
       {!section:handler}).
     - [uri] is the target of your request (for example, [https://foo.bar/]).
@@ -570,6 +592,7 @@ val request :
 
 module Client = Http_miou_client
 module Server = Http_miou_server
+module Cookie = Cookie
 
 module Flow = Flow
 (** [Flow] is the interface required by [httpcats] to implement the HTTP client

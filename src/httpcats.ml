@@ -10,6 +10,7 @@ module Version = H1.Version
 module Status = H2.Status
 module Headers = H2.Headers
 module Method = H2.Method
+module Cookie = Cookie
 
 let ( % ) f g x = f (g x)
 
@@ -81,13 +82,11 @@ let decode_uri uri =
   | _ -> Error (`Msg "Could't decode URI on top")
 
 let resolve_location ~uri ~location =
+  Log.debug (fun m -> m "resolve location: uri:%S, location:%S" uri location);
   match String.split_on_char '/' location with
   | "http:" :: "" :: _ -> Ok location
   | "https:" :: "" :: _ -> Ok location
-  | "" :: "" :: _ ->
-      let schema = String.sub uri 0 (String.index uri '/') in
-      Ok (schema ^ location)
-  | "" :: _ -> begin
+  | "" :: "" :: _ -> begin
       match String.split_on_char '/' uri with
       | schema :: "" :: user_pass_host_port :: _ ->
           Ok (String.concat "/" [ schema; ""; user_pass_host_port ^ location ])
@@ -453,6 +452,7 @@ type config_for_a_request = {
   ; headers: (string * string) list
   ; body: body option
   ; uri: string
+  ; cookies: (string * string) list
 }
 
 and tls_config = [ `Custom of Tls.Config.client | `Default of Tls.Config.client ]
@@ -474,7 +474,6 @@ let single_request cfg ~fn acc =
       | `Default cfg, _ -> Some cfg
     else Ok None
   in
-  Log.debug (fun m -> m "connect to %s (connected)" cfg.uri);
   let* flow, ipaddr, port, epoch =
     match cfg.resolver with
     | `Happy happy_eyeballs ->
@@ -483,11 +482,14 @@ let single_request cfg ~fn acc =
     | `User connect -> connect ?port ?tls_config host |> open_error_msg
     | `System -> connect_system ?port ?tls_config host |> open_error_msg
   in
-  Log.debug (fun m -> m "single request to %s (connected)" cfg.uri);
+  Log.debug (fun m -> m "connected to %s" cfg.uri);
+  let to_cookie (k, v) = ("Cookie", Fmt.str "%s=%s" k v) in
+  let cookies = List.map to_cookie cfg.cookies in
+  let headers = cfg.headers @ cookies in
   let cfg' =
     {
       meth= cfg.meth
-    ; headers= cfg.headers
+    ; headers
     ; body= cfg.body
     ; scheme
     ; user_pass
@@ -528,9 +530,83 @@ let memoize = function
   | String _ as body -> body
   | Stream seq -> Stream (Seq.memoize seq)
 
+(* NOTE(dinosaure): Cookie part, the goal is to keep a [db]
+   ([(string * string) list]) along the redirection if the server wants to
+   implement a POST-to-GET service. *)
+
+let cookies_from_headers headers =
+  let parse str =
+    match String.split_on_char '=' str with
+    | [ key; value ] -> Some (key, value)
+    | _ -> None
+  in
+  let rec go acc = function
+    | [] -> List.rev acc
+    | (key, value) :: headers -> (
+        match String.lowercase_ascii key with
+        | "cookie" ->
+            let acc =
+              match parse value with
+              | Some (key, value) -> (key, value) :: acc
+              | None -> acc
+            in
+            go acc headers
+        | _ -> go acc headers)
+  in
+  go [] headers
+
+let headers_without_cookies headers =
+  let rec go acc = function
+    | [] -> List.rev acc
+    | (key, value) :: rest -> (
+        match String.lowercase_ascii key with
+        | "cookie" -> go acc rest
+        | _ -> go ((key, value) :: acc) rest)
+  in
+  go [] headers
+
+let get_cookies_from_response (resp : response) =
+  let headers = Headers.to_list resp.headers in
+  let rec go acc = function
+    | [] -> acc
+    | (key, value) :: headers -> (
+        match String.lowercase_ascii key with
+        | "set-cookie" ->
+            let acc =
+              match Cookie.parse value with
+              | Some cookie -> cookie :: acc
+              | None -> acc
+            in
+            go acc headers
+        | _ -> go acc headers)
+  in
+  go [] headers
+
+let accept_all_cookies db cookies =
+  let db' = List.map (fun { Cookie.key; value; _ } -> (key, value)) cookies in
+  let rec go db' = function
+    | [] -> db'
+    | (key, value) :: rest ->
+        (* NOTE(dinosaure): we add only pre-existing cookies which are not set by the server. *)
+        if List.mem_assoc key db' then go db' rest
+        else go ((key, value) :: db') rest
+  in
+  go db' db
+
+(* NOTE(dinosaure): depending on the redirection, we possibly need to change the method used.
+   Specially for 302 and 302 status codes. *)
+
+let meth_from_redirection meth (resp : response) =
+  match (meth, resp.status) with
+  | _, (`See_other | `Found) -> `GET
+  | meth, _ -> meth
+
+type filter =
+  (string * string) list -> Cookie.cookie list -> (string * string) list
+
 let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?(resolver = `System) ~fn ~uri acc =
+    ?(resolver = `System) ?cookies:(filter = accept_all_cookies) ~fn ~uri acc =
   let tls_config =
     match tls_config with
     | Some cfg -> Ok (`Custom cfg)
@@ -560,30 +636,32 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ; http_config
     ; tls_config
     ; meth
-    ; headers
+    ; headers= headers_without_cookies headers
     ; body= Option.map memoize body
     ; uri
+    ; cookies= cookies_from_headers headers
     }
   in
   if not follow_redirect then single_request cfg ~fn acc
   else
     let ( let* ) = Result.bind in
-    let rec go count uri =
+    let rec go count cfg =
       if count = 0 then Error (`Msg "Redirect limit exceeded")
       else
-        let cfg = { cfg with uri; body= Option.map memoize cfg.body } in
         match single_request cfg ~fn acc with
         | Error _ as err -> err
         | Ok (resp, result) ->
+            let cookies = filter cfg.cookies (get_cookies_from_response resp) in
             if Status.is_redirection resp.status then
               match Headers.get resp.headers "location" with
               | Some location ->
+                  let meth = meth_from_redirection cfg.meth resp in
                   let* uri = resolve_location ~uri ~location in
-                  go (pred count) uri
+                  go (pred count) { cfg with meth; uri; cookies }
               | None -> Ok (resp, result)
             else Ok (resp, result)
     in
-    go max_redirect uri
+    go max_redirect cfg
 
 let[@inline always] open_error = function
   | Ok _ as v -> v
@@ -592,9 +670,9 @@ let[@inline always] open_error = function
 (* XXX(dinosaure): really? to open polymorphic variant... *)
 let[@inline always] request ?config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
-    ?(resolver = `System) ~fn ~uri acc =
+    ?(resolver = `System) ?cookies ~fn ~uri acc =
   request ?config ?tls_config ?authenticator ~meth ~headers ?body ~max_redirect
-    ~follow_redirect ~resolver ~fn ~uri acc
+    ~follow_redirect ~resolver ?cookies ~fn ~uri acc
   |> open_error
 
 let prepare_headers ?config:(version = `HTTP_1_1 H1.Config.default) ~meth ~uri
