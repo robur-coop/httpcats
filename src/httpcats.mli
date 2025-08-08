@@ -524,6 +524,9 @@ type 'a handler = meta -> request -> response -> 'a -> string option -> 'a
     [httpcats] from following redirects (default behaviour) by specifying
     [~follow_redirect:false]. *)
 
+type filter =
+  (string * string) list -> Cookie.cookie list -> (string * string) list
+
 val request :
      ?config:[ `HTTP_1_1 of H1.Config.t | `H2 of H2.Config.t ]
   -> ?tls_config:Tls.Config.client
@@ -535,6 +538,7 @@ val request :
   -> ?follow_redirect:bool
   -> ?resolver:
        [ `Happy of Happy_eyeballs_miou_unix.t | `User of resolver | `System ]
+  -> ?cookies:filter
   -> fn:'a handler
   -> uri:string
   -> 'a
