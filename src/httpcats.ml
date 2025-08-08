@@ -10,6 +10,7 @@ module Version = H1.Version
 module Status = H2.Status
 module Headers = H2.Headers
 module Method = H2.Method
+module Cookie = Cookie
 
 let ( % ) f g x = f (g x)
 
