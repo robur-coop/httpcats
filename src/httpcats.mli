@@ -14,6 +14,17 @@
     for experienced users. We recommend using [Vif] if you would like to have an
     HTTP server. *)
 
+type error =
+  [ `V1 of H1.Client_connection.error
+  | `V2 of H2.Client_connection.error
+  | `Protocol of string
+  | `Msg of string
+  | `Exn of exn ]
+(** The type of errors. *)
+
+val pp_error : error Fmt.t
+(** Pretty-printer of {!error}s. *)
+
 (** {2:crypto [httpcats] and cryptography}
 
     When an HTTP request is made, it may require cryptographic calculations,
@@ -38,17 +49,6 @@
         Fun.protect ~finally @@ fun () ->
         Httpcats.request ...
     ]} *)
-
-type error =
-  [ `V1 of H1.Client_connection.error
-  | `V2 of H2.Client_connection.error
-  | `Protocol of string
-  | `Msg of string
-  | `Exn of exn ]
-(** The type of errors. *)
-
-val pp_error : error Fmt.t
-(** Pretty-printer of {!error}s. *)
 
 module Version = H1.Version
 (** Protocol Version.
@@ -102,6 +102,8 @@ module Headers = H2.Headers
 
     Case-insensitive key-value pairs. *)
 
+(* {2 Requests and responses} *)
+
 module Method = H2.Method
 (** Request methods. *)
 
@@ -120,6 +122,8 @@ type response = {
 
 val pp_response : response Fmt.t
 (** Pretty printer of a {!response}. *)
+
+(** {2 Type of connection used by [httpcats]} *)
 
 type socket =
   [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ]
