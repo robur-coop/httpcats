@@ -598,7 +598,7 @@ module Client = Http_miou_client
 module Server = Http_miou_server
 module Cookie = Cookie
 
-module Flow = Flow
+module Flow = Runtime.Flow
 (** [Flow] is the interface required by [httpcats] to implement the HTTP client
     and the HTTP server. This interface is really close to what [Unix] can
     provide. *)

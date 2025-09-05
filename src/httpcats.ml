@@ -1,7 +1,7 @@
 let src = Logs.Src.create "httpcats"
 
 module Log = (val Logs.src_log src : Logs.LOG)
-module Flow = Flow
+module Flow = Runtime.Flow
 module Miou_flow = Http_miou_unix
 module Runtime = Runtime
 module Client = Http_miou_client

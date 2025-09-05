@@ -1,4 +1,10 @@
 (library
+ (name runtime)
+ (public_name httpcats.runtime)
+ (modules runtime flow)
+ (libraries fmt logs faraday miou bstr))
+
+(library
  (name httpcats)
  (public_name httpcats)
  (modules
@@ -6,11 +12,10 @@
   http_miou_unix
   http_miou_client
   http_miou_server
-  flow
   cookie
-  bstream
-  runtime)
+  bstream)
  (libraries
+  httpcats.runtime
   ca-certs
   happy-eyeballs-miou-unix
   dns-client-miou-unix

@@ -4,6 +4,7 @@ let _minor = (Sys.word_size / 8 * 256) - 1
 external reraise : exn -> 'a = "%reraise"
 
 module Log = (val Logs.src_log src : Logs.LOG)
+module Flow = Flow
 
 module type S = sig
   type t
