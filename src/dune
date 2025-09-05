@@ -5,6 +5,12 @@
  (libraries fmt logs faraday miou bstr))
 
 (library
+ (name httpcats_core)
+ (public_name httpcats.core)
+ (modules httpcats_core cookie)
+ (libraries fmt ptime ipaddr tls h1 h2 bstr))
+
+(library
  (name httpcats)
  (public_name httpcats)
  (modules
@@ -12,10 +18,10 @@
   http_miou_unix
   http_miou_client
   http_miou_server
-  cookie
   bstream)
  (libraries
   httpcats.runtime
+  httpcats.core
   ca-certs
   happy-eyeballs-miou-unix
   dns-client-miou-unix

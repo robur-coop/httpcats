@@ -6,11 +6,11 @@ module Miou_flow = Http_miou_unix
 module Runtime = Runtime
 module Client = Http_miou_client
 module Server = Http_miou_server
-module Version = H1.Version
-module Status = H2.Status
-module Headers = H2.Headers
-module Method = H2.Method
-module Cookie = Cookie
+module Version = Httpcats_core.Version
+module Status = Httpcats_core.Status
+module Headers = Httpcats_core.Headers
+module Method = Httpcats_core.Method
+module Cookie = Httpcats_core.Cookie
 
 let ( % ) f g x = f (g x)
 
@@ -108,9 +108,13 @@ let add_authentication ?(meth = `Basic) ~add headers user_pass =
 
 let user_agent = "hurl/%%VERSION_NUM%%"
 
-type request = { meth: Method.t; target: string; headers: Headers.t }
+type request = Httpcats_core.request = {
+    meth: Method.t
+  ; target: string
+  ; headers: Headers.t
+}
 
-type response = {
+type response = Httpcats_core.response = {
     version: Version.t
   ; status: Status.t
   ; reason: string
@@ -125,20 +129,15 @@ let pp_response ppf resp =
     (Status.to_string resp.status)
     resp.reason Headers.pp_hum resp.headers
 
-type error =
-  [ `V1 of H1.Client_connection.error
-  | `V2 of H2.Client_connection.error
-  | `Protocol of string
-  | `Msg of string
-  | `Exn of exn ]
+type error = Httpcats_core.error
 
 let pp_error ppf = function
   | `Msg msg -> Fmt.string ppf msg
   | #Client.error as err -> Client.pp_error ppf err
 
-type body = String of string | Stream of string Seq.t
-type meta = (Ipaddr.t * int) * Tls.Core.epoch_data option
-type 'a handler = meta -> request -> response -> 'a -> string option -> 'a
+type body = Httpcats_core.body = String of string | Stream of string Seq.t
+type meta = Httpcats_core.meta
+type 'a handler = 'a Httpcats_core.handler
 
 type config = {
     meth: H2.Method.t

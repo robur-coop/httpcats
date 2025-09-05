@@ -29,11 +29,7 @@ end
 module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
 module C = Runtime.Make (TLS) (H2_Server_connection)
 
-type error =
-  [ `V1 of H1.Server_connection.error
-  | `V2 of H2.Server_connection.error
-  | `Protocol of string ]
-
+type error = Httpcats_core.Server.error
 type stop = Miou.Mutex.t * Miou.Condition.t * bool ref
 
 let pp_error ppf = function
@@ -55,22 +51,25 @@ module Status = H2.Status
 
 type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
 
-type request = {
+type request = Httpcats_core.Server.request = {
     meth: Method.t
   ; target: string
   ; scheme: string
   ; headers: Headers.t
 }
 
-type response = { status: Status.t; headers: Headers.t }
+type response = Httpcats_core.Server.response = {
+    status: Status.t
+  ; headers: Headers.t
+}
+
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
-
-type error_handler =
-  [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
+type error_handler = Httpcats_core.Server.error_handler
 
 type handler =
-  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
+  [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ]
+  Httpcats_core.Server.handler
 
 let request_from_h1 ~scheme { H1.Request.meth; target; headers; _ } =
   let headers = Headers.of_list (H1.Headers.to_list headers) in
