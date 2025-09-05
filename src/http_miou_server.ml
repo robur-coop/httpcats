@@ -72,7 +72,7 @@ type error_handler =
 type handler =
   [ `Tcp of Miou_unix.file_descr | `Tls of Tls_miou_unix.t ] -> reqd -> unit
 
-let request_from_H1 ~scheme { H1.Request.meth; target; headers; _ } =
+let request_from_h1 ~scheme { H1.Request.meth; target; headers; _ } =
   let headers = Headers.of_list (H1.Headers.to_list headers) in
   { meth; target; scheme; headers }
 
@@ -127,7 +127,7 @@ let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
   let scheme = "http" in
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
-    let request = Option.map (request_from_H1 ~scheme) request in
+    let request = Option.map (request_from_h1 ~scheme) request in
     let err = `V1 err in
     let respond hdrs =
       let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
@@ -156,7 +156,7 @@ let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
   let scheme = "https" in
   let read_buffer_size = config.H1.Config.read_buffer_size in
   let error_handler ?request err respond =
-    let request = Option.map (request_from_H1 ~scheme) request in
+    let request = Option.map (request_from_h1 ~scheme) request in
     let err = `V1 err in
     let respond hdrs =
       let hdrs = H1.Headers.of_list (Headers.to_list hdrs) in
