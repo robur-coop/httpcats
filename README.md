@@ -37,7 +37,7 @@ dispatching of TLS layer implementations that we do not find suitable.
 You need to initialize the random number generator required by `mirage-crypto`
 and `ocaml-tls` and make your request like this:
 ```ocaml
-let fn _meta _resp () = function
+let fn _meta _req _resp () = function
   | Some str -> print_string str
   | None -> ()
 
