@@ -28,5 +28,5 @@ build: [
   ["dune" "subst"] {dev}
   ["dune" "build" "-p" name "-j" jobs]
 ]
-synopsis: "A simple HTTP client using h1, h2, and miou"
+synopsis: "A simple HTTP client / server using h1, h2, and miou"
 available: [ arch != "x86_32" ]
