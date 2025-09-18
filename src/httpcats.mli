@@ -107,6 +107,8 @@ module Headers = H2.Headers
 module Method = H2.Method
 (** Request methods. *)
 
+module Cookie = Httpcats_core.Cookie
+
 type request = { meth: Method.t; target: string; headers: Headers.t }
 (** A request consisting of a method (see {!module:Method}), a {i target} (the
     path requested by the client) and a headers. *)
@@ -596,9 +598,8 @@ val request :
 
 module Client = Http_miou_client
 module Server = Http_miou_server
-module Cookie = Cookie
 
-module Flow = Flow
+module Flow = Runtime.Flow
 (** [Flow] is the interface required by [httpcats] to implement the HTTP client
     and the HTTP server. This interface is really close to what [Unix] can
     provide. *)

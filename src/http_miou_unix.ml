@@ -14,7 +14,7 @@ module TCP = struct
 
   let write fd ?off ?len str =
     try Miou_unix.write fd str ?off ?len with
-    | Unix.(Unix_error (EPIPE, _, _)) -> reraise Flow.Closed_by_peer
+    | Unix.(Unix_error (EPIPE, _, _)) -> reraise Runtime.Flow.Closed_by_peer
     | exn -> reraise exn
 
   let close = Miou_unix.close
@@ -33,6 +33,6 @@ module TLS = struct
 
   let write fd ?off ?len str =
     try write fd ?off ?len str with
-    | Tls_miou_unix.Closed_by_peer -> reraise Flow.Closed_by_peer
+    | Tls_miou_unix.Closed_by_peer -> reraise Runtime.Flow.Closed_by_peer
     | exn -> reraise exn
 end
