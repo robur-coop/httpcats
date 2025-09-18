@@ -13,12 +13,7 @@
 (library
  (name httpcats)
  (public_name httpcats)
- (modules
-  httpcats
-  http_miou_unix
-  http_miou_client
-  http_miou_server
-  bstream)
+ (modules httpcats http_miou_unix http_miou_client http_miou_server bstream)
  (libraries
   httpcats.runtime
   httpcats.core
