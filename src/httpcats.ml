@@ -54,28 +54,28 @@ let decode_uri uri =
        else Error (`Msg "Unknown protocol"))
       >>= fun (scheme, is_tls) ->
       (match String.split_on_char '@' user_pass_host_port with
-      | [ host_port ] -> Ok (None, host_port)
-      | [ user_pass; host_port ] ->
-          decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
-      | _ -> Error (`Msg "Couldn't decode URI"))
+        | [ host_port ] -> Ok (None, host_port)
+        | [ user_pass; host_port ] ->
+            decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
+        | _ -> Error (`Msg "Couldn't decode URI"))
       >>= fun (user_pass, host_port) ->
       decode_host_port host_port >>= fun (host, port) ->
       Ok (is_tls, scheme, user_pass, host, port, "/" ^ String.concat "/" path)
   | [ user_pass_host_port ] ->
       (match String.split_on_char '@' user_pass_host_port with
-      | [ host_port ] -> Ok (None, host_port)
-      | [ user_pass; host_port ] ->
-          decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
-      | _ -> Error (`Msg "Couldn't decode URI"))
+        | [ host_port ] -> Ok (None, host_port)
+        | [ user_pass; host_port ] ->
+            decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
+        | _ -> Error (`Msg "Couldn't decode URI"))
       >>= fun (user_pass, host_port) ->
       decode_host_port host_port >>= fun (host, port) ->
       Ok (false, "", user_pass, host, port, "/")
   | user_pass_host_port :: path ->
       (match String.split_on_char '@' user_pass_host_port with
-      | [ host_port ] -> Ok (None, host_port)
-      | [ user_pass; host_port ] ->
-          decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
-      | _ -> Error (`Msg "Couldn't decode URI"))
+        | [ host_port ] -> Ok (None, host_port)
+        | [ user_pass; host_port ] ->
+            decode_user_pass user_pass >>= fun up -> Ok (Some up, host_port)
+        | _ -> Error (`Msg "Couldn't decode URI"))
       >>= fun (user_pass, host_port) ->
       decode_host_port host_port >>= fun (host, port) ->
       Ok (false, "", user_pass, host, port, "/" ^ String.concat "/" path)
@@ -499,23 +499,22 @@ let single_request cfg ~fn acc =
     ; epoch
     }
   in
-  begin
-    match (alpn_protocol flow, cfg.http_config) with
-    | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
-        single_http_1_1_request ~config flow cfg' ~fn acc
-    | (Some `HTTP_1_1 | None), None -> single_http_1_1_request flow cfg' ~fn acc
-    | Some `H2, Some (`H2 config) -> single_h2_request ~config flow cfg' ~fn acc
-    | None, Some (`H2 _) ->
-        Log.warn (fun m ->
-            m "no ALPN protocol (choose http/1.1) where user forces h2");
-        single_http_1_1_request flow cfg' ~fn acc
-    | Some `H2, None -> single_h2_request flow cfg' ~fn acc
-    | Some `H2, Some (`HTTP_1_1 _) ->
-        Log.warn (fun m -> m "ALPN protocol is h2 where user forces http/1.1");
-        single_h2_request flow cfg' ~fn acc
-    | Some `HTTP_1_1, Some (`H2 _) ->
-        Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
-        single_http_1_1_request flow cfg' ~fn acc
+  begin match (alpn_protocol flow, cfg.http_config) with
+  | (Some `HTTP_1_1 | None), Some (`HTTP_1_1 config) ->
+      single_http_1_1_request ~config flow cfg' ~fn acc
+  | (Some `HTTP_1_1 | None), None -> single_http_1_1_request flow cfg' ~fn acc
+  | Some `H2, Some (`H2 config) -> single_h2_request ~config flow cfg' ~fn acc
+  | None, Some (`H2 _) ->
+      Log.warn (fun m ->
+          m "no ALPN protocol (choose http/1.1) where user forces h2");
+      single_http_1_1_request flow cfg' ~fn acc
+  | Some `H2, None -> single_h2_request flow cfg' ~fn acc
+  | Some `H2, Some (`HTTP_1_1 _) ->
+      Log.warn (fun m -> m "ALPN protocol is h2 where user forces http/1.1");
+      single_h2_request flow cfg' ~fn acc
+  | Some `HTTP_1_1, Some (`H2 _) ->
+      Log.warn (fun m -> m "ALPN protocol is http/1.1 where user forces h2");
+      single_http_1_1_request flow cfg' ~fn acc
   end
   |> open_client_error
 
@@ -621,11 +620,9 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
           | Some authenticator -> Ok authenticator
         in
         Result.map
-          begin
-            fun authenticator ->
-              Tls.Config.client ~alpn_protocols ~authenticator ()
-              |> Result.get_ok
-              |> fun default -> `Default default
+          begin fun authenticator ->
+            Tls.Config.client ~alpn_protocols ~authenticator () |> Result.get_ok
+            |> fun default -> `Default default
           end
           authenticator
   in

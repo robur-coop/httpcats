@@ -27,7 +27,7 @@ module Make (Flow : Flow.S) (Runtime : S) : sig
 
   val run :
        conn
-    -> ?src:Logs.src
+    -> ?tags:Logs.Tag.set
     -> ?read_buffer_size:int
     -> ?upgrade:(flow -> unit)
     -> flow
