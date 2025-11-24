@@ -25,7 +25,7 @@ type stop
 (** Type of switches to stop a HTTP server. *)
 
 val stop : unit -> stop
-(** [create ()] creates a new switch to stop a HTTP server. *)
+(** [stop ()] creates a new switch to stop a HTTP server. *)
 
 val switch : stop -> unit
 (** [switch stop] turns off the HTTP server associated to the given [stop]. It
@@ -172,3 +172,5 @@ module Websocket : sig
   val switch : stop -> unit
   val upgrade : ?stop:stop -> fn:(ic -> oc -> unit) -> flow -> unit
 end
+
+val peer : string Logs.Tag.def

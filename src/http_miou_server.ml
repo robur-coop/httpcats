@@ -1,6 +1,8 @@
 open Http_miou_unix
 module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
 
+let peer = Logs.Tag.def ~doc:"HTTPcats peer" "httpcats.peer" Fmt.string
+
 module TCP_and_H1 = struct
   include TCP
 
@@ -144,11 +146,10 @@ let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
      the end, the flow is only shutdown on the write side. *)
   let finally () = Miou_unix.close flow in
   Fun.protect ~finally @@ fun () ->
-  let src =
-    let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
-    Logs.Src.create (Fmt.str "http:%a" pp_sockaddr sockaddr)
-  in
-  Miou.await_exn (B.run conn ~src ~read_buffer_size ?upgrade flow)
+  let tags = Logs.Tag.empty in
+  let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
+  let tags = Logs.Tag.add peer (Fmt.str "http:%a" pp_sockaddr sockaddr) tags in
+  Miou.await_exn (B.run conn ~tags ~read_buffer_size ?upgrade flow)
 
 let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
     ~user's_handler flow =
@@ -253,11 +254,9 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         Log.debug (fun m ->
             m "receive a connection from: %a" pp_sockaddr sockaddr);
         clean_up orphans;
-        call ~orphans
-          begin
-            fun () ->
-              http_1_1_server_connection ~config ~user's_error_handler ?upgrade
-                ~user's_handler fd'
+        call ~orphans begin fun () ->
+            http_1_1_server_connection ~config ~user's_error_handler ?upgrade
+              ~user's_handler fd'
           end;
         go orphans file_descr
   in
@@ -299,19 +298,18 @@ let with_tls ?(parallel = true) ?stop
         let fn () =
           try
             let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
-            begin
-              match (config, alpn tls_flow) with
-              | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-                  Log.debug (fun m -> m "Start a h2 request handler");
-                  h2s_server_connection ~config:h2 ~user's_error_handler
-                    ?upgrade ~user's_handler tls_flow
-              | `Both (config, _), Some "http/1.1"
-              | `HTTP_1_1 config, (Some "http/1.1" | None) ->
-                  Log.debug (fun m -> m "Start a http/1.1 request handler");
-                  https_1_1_server_connection ~config ~user's_error_handler
-                    ?upgrade ~user's_handler tls_flow
-              | `Both _, None -> assert false
-              | _, Some _protocol -> assert false
+            begin match (config, alpn tls_flow) with
+            | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
+                Log.debug (fun m -> m "Start a h2 request handler");
+                h2s_server_connection ~config:h2 ~user's_error_handler ?upgrade
+                  ~user's_handler tls_flow
+            | `Both (config, _), Some "http/1.1"
+            | `HTTP_1_1 config, (Some "http/1.1" | None) ->
+                Log.debug (fun m -> m "Start a http/1.1 request handler");
+                https_1_1_server_connection ~config ~user's_error_handler
+                  ?upgrade ~user's_handler tls_flow
+            | `Both _, None -> assert false
+            | _, Some _protocol -> assert false
             end
           with exn ->
             Log.err (fun m ->
@@ -422,19 +420,18 @@ module Websocket = struct
       match Bstream.get oc with
       | None -> ()
       | Some (kind, data) ->
-          begin
-            match kind with
-            | `Other -> failwith "Unsupported frame of kind `Other"
-            | `Connection_close ->
-                Wsd.close wsd; Bstream.close oc; Ws_stop.set_emmited stop; ()
-            | `Ping -> Wsd.send_ping wsd
-            | `Pong -> Wsd.send_pong wsd
-            | `Msg (kind, is_fin) ->
-                let len = String.length data in
-                Wsd.send_bytes wsd ~kind ~is_fin
-                  (Bytes.unsafe_of_string data)
-                  ~off:0 ~len;
-                ()
+          begin match kind with
+          | `Other -> failwith "Unsupported frame of kind `Other"
+          | `Connection_close ->
+              Wsd.close wsd; Bstream.close oc; Ws_stop.set_emmited stop; ()
+          | `Ping -> Wsd.send_ping wsd
+          | `Pong -> Wsd.send_pong wsd
+          | `Msg (kind, is_fin) ->
+              let len = String.length data in
+              Wsd.send_bytes wsd ~kind ~is_fin
+                (Bytes.unsafe_of_string data)
+                ~off:0 ~len;
+              ()
           end;
           go ()
     in
@@ -469,15 +466,16 @@ module Websocket = struct
     let stop =
       match stop with None -> Ws_stop.create () | Some stop -> stop
     in
-    let src =
+    let tags = Logs.Tag.empty in
+    let tags =
       match flow with
       | `Tcp flow ->
           let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
-          Logs.Src.create (Fmt.str "ws:%a" pp_sockaddr sockaddr)
+          Logs.Tag.add peer (Fmt.str "ws:%a" pp_sockaddr sockaddr) tags
       | `Tls flow ->
           let flow = Tls_miou_unix.file_descr flow in
           let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
-          Logs.Src.create (Fmt.str "wss:%a" pp_sockaddr sockaddr)
+          Logs.Tag.add peer (Fmt.str "wss:%a" pp_sockaddr sockaddr) tags
     in
     let websocket_handler = websocket_handler src ic ivar stop in
     let conn =
@@ -486,8 +484,8 @@ module Websocket = struct
     in
     let runtime's_prm =
       match flow with
-      | `Tcp flow -> D.run conn ~src flow
-      | `Tls flow -> E.run conn ~src flow
+      | `Tcp flow -> D.run conn ~tags flow
+      | `Tls flow -> E.run conn ~tags flow
     in
     let wsd = Miou.Computation.await_exn ivar in
     let writer = Miou.async (write_websocket oc stop wsd) in
