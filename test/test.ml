@@ -26,11 +26,12 @@ let () = Logs_threaded.enable ()
 let () = Printexc.record_backtrace true
 let domains = 3
 
-let server ?(port = 8080) handler =
+let server ?(port = 9451) handler =
   let stop = Httpcats.Server.stop () in
   let prm =
-    Miou.call @@ fun () ->
-    let sockaddr = Unix.ADDR_INET (Unix.inet_addr_loopback, port) in
+    Miou.async @@ fun () ->
+    let any = Unix.inet_addr_of_string "0.0.0.0" in
+    let sockaddr = Unix.ADDR_INET (any, port) in
     Httpcats.Server.clear ~stop ~handler sockaddr
   in
   (stop, prm)
@@ -97,11 +98,12 @@ end
 let secure_server ~seed ?(port = 8080) handler =
   let stop = Httpcats.Server.stop () in
   let cert, pk, authenticator =
-    Rresult.R.failwith_error_msg (Ca.make "http.cats" seed)
+    Rresult.R.failwith_error_msg (Ca.make "localhost" seed)
   in
   let prm =
     Miou.async @@ fun () ->
-    let sockaddr = Unix.ADDR_INET (Unix.inet_addr_loopback, port) in
+    let any = Unix.inet_addr_of_string "0.0.0.0" in
+    let sockaddr = Unix.ADDR_INET (any, port) in
     let cfg =
       Tls.Config.server
         ~certificates:(`Single ([ cert ], pk))
@@ -133,13 +135,13 @@ let test00 =
         let resp = Response.create ~headers `OK in
         Reqd.respond_with_string reqd resp body
   in
-  let stop, prm = server ~port:4000 handler in
+  let stop, prm = server ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver:(`Happy resolver)
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"http://127.0.0.1:4000/" (Buffer.create 0x10)
+      ~uri:"http://127.0.0.1:9451/" (Buffer.create 0x10)
   with
   | Ok (_response, buf) ->
       Alcotest.(check string)
@@ -191,13 +193,13 @@ let test01 =
         in
         go max
   in
-  let stop, prm = server ~port:4000 handler in
+  let stop, prm = server ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   match
     Httpcats.request ~resolver:(`Happy resolver)
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
+      ~uri:"http://127.0.0.1:9451" (Buffer.create 0x1000)
   with
   | Ok (_response, buf) ->
       Alcotest.(check string) "random" (generate g1 max) (Buffer.contents buf);
@@ -284,23 +286,23 @@ let test02 =
         in
         fold_http_1_1 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
   in
-  let stop, prm = server ~port:4000 handler in
+  let stop, prm = server ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let g0 = Random.State.make_self_init () in
   let body =
-    Httpcats.stream (random_string_seq ~g:(Random.State.copy g0) ~len:0x4000)
+    Httpcats.stream (random_string_seq ~g:(Random.State.copy g0) ~len:0x9451)
   in
   match
     Httpcats.request ~resolver:(`Happy resolver) ~meth:`POST ~body
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"http://127.0.0.1:4000" (Buffer.create 0x1000)
+      ~uri:"http://127.0.0.1:9451" (Buffer.create 0x1000)
   with
   | Ok (_response, buf) ->
       let hash' = Digestif.SHA1.of_hex (Buffer.contents buf) in
       let hash =
         Digestif.SHA1.digesti_string
-          ((Fun.flip Seq.iter) (random_string_seq ~g:g0 ~len:0x4000))
+          ((Fun.flip Seq.iter) (random_string_seq ~g:g0 ~len:0x9451))
       in
       Alcotest.(check sha1) "sha1" hash hash';
       Httpcats.Server.switch stop;
@@ -349,7 +351,7 @@ let test03 =
         let resp = Response.create ~headers `OK in
         Reqd.respond_with_string reqd resp body
   in
-  let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
+  let stop, prm, authenticator = secure_server ~seed ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let http_1_1 =
     Miou.async @@ fun () ->
@@ -360,7 +362,7 @@ let test03 =
     Httpcats.request ~resolver:(`Happy resolver) ~tls_config
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
+      ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
@@ -369,7 +371,7 @@ let test03 =
       Httpcats.request ~resolver:(`Happy resolver) ~authenticator
         ~fn:(fun _ _req _resp buf -> function
           | Some str -> Buffer.add_string buf str; buf | None -> buf)
-        ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
+        ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
       |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
     in
     Logs.debug (fun m -> m "End of h2 request");
@@ -449,7 +451,7 @@ let test04 =
         in
         go max
   in
-  let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
+  let stop, prm, authenticator = secure_server ~seed ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let http_1_1 =
     Miou.async @@ fun () ->
@@ -460,7 +462,7 @@ let test04 =
     Httpcats.request ~resolver:(`Happy resolver) ~tls_config
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
+      ~uri:"https://127.0.0.1:9451" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
@@ -468,7 +470,7 @@ let test04 =
     Httpcats.request ~resolver:(`Happy resolver) ~authenticator
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
+      ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   match
@@ -535,9 +537,9 @@ let test05 =
         in
         fold_http_1_1 ~finally ~f Digestif.SHA1.empty (Reqd.request_body reqd)
   in
-  let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
+  let stop, prm, authenticator = secure_server ~seed ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
-  let body = random_string ~len:0x4000 in
+  let body = random_string ~len:0x9451 in
   let http_1_1 =
     Miou.async @@ fun () ->
     let tls_config =
@@ -548,7 +550,7 @@ let test05 =
       ~body:(Httpcats.string body)
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
+      ~uri:"https://127.0.0.1:9451" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   let h2 =
@@ -557,7 +559,7 @@ let test05 =
       ~body:(Httpcats.string body)
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x1000)
+      ~uri:"https://127.0.0.1:9451" (Buffer.create 0x1000)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   match
@@ -602,7 +604,7 @@ let test06 =
         Reqd.respond_with_string reqd resp body
     | `V1 _ -> assert false
   in
-  let stop, prm, authenticator = secure_server ~seed ~port:4000 handler in
+  let stop, prm, authenticator = secure_server ~seed ~port:9451 handler in
   let daemon, resolver = Happy_eyeballs_miou_unix.create () in
   let request =
     Miou.async @@ fun () ->
@@ -614,7 +616,7 @@ let test06 =
           ("transfer-encoding", "chunked"); ("accept-encoding", "identity")
         ; ("connection", "close")
         ]
-      ~uri:"https://127.0.0.1:4000" (Buffer.create 0x10)
+      ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
     |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
   in
   match Miou.await request with
