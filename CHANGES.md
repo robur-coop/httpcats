@@ -1,3 +1,10 @@
+# v0.2.0 (2026-02-19) Paris - France
+
+- Improve the OPAM file and the README.md (@geazi-anc, #39)
+- Split out the core of `httpcats` to be re-usable by unikernels (@dinosaure, #40)
+- Avoid a memory leak about logs (@dinosaure, #42)
+- Upgrade GitHub CI and ocamlformat (@dinosaure, #43)
+
 # v0.1.0 (2025-08-09) Paris - France
 
 - Add the support of websocket (@swrup & @dinosaure)
