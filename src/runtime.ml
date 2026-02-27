@@ -127,21 +127,18 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
 
   let writev flow write_buf bstrs =
     let len = List.fold_left (fun a { Faraday.len; _ } -> a + len) 0 bstrs in
-    try
-      List.iter
-        (fun { Faraday.buffer; off; len } ->
-          let rec go off len =
-            if len > 0 then begin
-              let n = min len _minor in
-              Bstr.blit_to_bytes buffer ~src_off:off write_buf ~dst_off:0 ~len:n;
-              Flow.write flow ~off:0 ~len:n (Bytes.unsafe_to_string write_buf);
-              go (off + n) (len - n)
-            end
-          in
-          go off len)
-        bstrs;
-      `Ok len
-    with
+    let fn { Faraday.buffer; off; len } =
+      let rec go src_off len =
+        if len > 0 then begin
+          let n = Int.min len _minor in
+          Bstr.blit_to_bytes buffer ~src_off write_buf ~dst_off:0 ~len:n;
+          Flow.write flow ~off:0 ~len:n (Bytes.unsafe_to_string write_buf);
+          go (src_off + n) (len - n)
+        end
+      in
+      go off len
+    in
+    try List.iter fn bstrs; `Ok len with
     | Closed_by_peer -> `Closed
     | _exn -> Flow.close flow; `Closed
 
