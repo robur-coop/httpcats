@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HTTP Server Benchmarks</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 2rem;
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.8rem;
+    margin-bottom: 0.5rem;
+    color: #f8fafc;
+  }
+  .subtitle {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 0.9rem;
+    margin-bottom: 2rem;
+  }
+  .chart-container {
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    max-width: 960px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .chart-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: #f1f5f9;
+  }
+  .chart-desc {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    margin-bottom: 1rem;
+  }
+  svg { display: block; margin: 0 auto; }
+  .axis text { fill: #94a3b8; font-size: 11px; }
+  .axis path, .axis line { stroke: #334155; }
+  .grid line { stroke: #1e293b; stroke-opacity: 0.7; }
+  .grid path { stroke: none; }
+  .tooltip {
+    position: absolute;
+    background: #334155;
+    color: #f1f5f9;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    line-height: 1.5;
+  }
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #cbd5e1;
+  }
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  th, td {
+    padding: 8px 12px;
+    text-align: right;
+    border-bottom: 1px solid #334155;
+  }
+  th { color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+  td:first-child, th:first-child { text-align: left; }
+  tr:hover td { background: #263348; }
+  .best { color: #4ade80; font-weight: 600; }
+  .best-ocaml { color: #38bdf8; font-weight: 600; }
+  .config-group { border-top: 2px solid #475569; }
+  .config-label { color: #60a5fa; font-weight: 600; }
+  .table-legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.8rem;
+  }
+  .table-legend span.best { color: #4ade80; }
+  .table-legend span.best-ocaml { color: #38bdf8; }
+</style>
+</head>
+<body>
+
+<h1>HTTP Server Benchmarks</h1>
+<p class="subtitle">wrk — 120s per test — Linux — taskset CPU pinning</p>
+
+<div class="chart-container">
+  <div class="chart-title">Scalability: Req/s by number of domains</div>
+  <div class="chart-desc">12 clients / 12 threads. Shows how each implementation leverages multi-domain parallelism.</div>
+  <div class="legend" id="legend-domains"></div>
+  <div id="chart-domains"></div>
+</div>
+
+<div class="chart-container">
+  <div class="chart-title">Requests per second — 8 domains (average over 3 attempts)</div>
+  <div class="chart-desc">Higher is better. The percentage on each bar indicates the wrk ±σ.</div>
+  <div class="legend" id="legend-rps"></div>
+  <div id="chart-rps"></div>
+</div>
+
+<div class="chart-container">
+  <div class="chart-title">Average latency — 8 domains (µs)</div>
+  <div class="chart-desc">Lower is better. The percentage on each bar indicates the wrk ±σ.</div>
+  <div class="legend" id="legend-lat"></div>
+  <div id="chart-lat"></div>
+</div>
+
+<div class="chart-container">
+  <div class="chart-title">Latency vs Throughput (scatter plot — all runs)</div>
+  <div class="chart-desc">Each dot = 1 wrk run. The ideal corner is bottom-right. Dot size reflects the number of domains.</div>
+  <div class="legend" id="legend-scatter"></div>
+  <div id="chart-scatter"></div>
+</div>
+
+<div class="chart-container">
+  <div class="chart-title">Stability: wrk ±σ by server and configuration</div>
+  <div class="chart-desc">Heatmap of the percentage of requests within ±1 standard deviation (latency). Greener is more stable.</div>
+  <div id="chart-heatmap"></div>
+</div>
+
+<div class="chart-container">
+  <div class="chart-title">Summary table</div>
+  <div id="table-container"></div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// --- Raw data from bench.txt ---
+const raw = {
+  httpcats: [
+    { domains: 1, clients: 12, threads: 12, attempts: [
+      { latUs: 260.84, latPct: 64.53, rps: 45795.22, rpsPct: 63.23 },
+      { latUs: 260.56, latPct: 66.24, rps: 45847.17, rpsPct: 66.58 },
+      { latUs: 256.28, latPct: 66.56, rps: 46612.88, rpsPct: 70.53 },
+    ]},
+    { domains: 2, clients: 12, threads: 12, attempts: [
+      { latUs: 132.81, latPct: 99.35, rps: 90907.80, rpsPct: 58.99 },
+      { latUs: 131.72, latPct: 99.27, rps: 91523.50, rpsPct: 59.99 },
+      { latUs: 132.38, latPct: 99.48, rps: 91458.78, rpsPct: 58.92 },
+    ]},
+    { domains: 4, clients: 12, threads: 12, attempts: [
+      { latUs: 83.68, latPct: 98.32, rps: 177059.83, rpsPct: 66.87 },
+      { latUs: 89.53, latPct: 97.94, rps: 170969.87, rpsPct: 91.66 },
+      { latUs: 104.59, latPct: 98.55, rps: 171324.89, rpsPct: 91.14 },
+    ]},
+    { domains: 8, clients: 12, threads: 12, attempts: [
+      { latUs: 65.15, latPct: 98.20, rps: 247210.23, rpsPct: 83.32 },
+      { latUs: 65.73, latPct: 98.15, rps: 246538.37, rpsPct: 51.54 },
+      { latUs: 69.74, latPct: 97.32, rps: 273641.00, rpsPct: 67.48 },
+    ]},
+    { domains: 8, clients: 32, threads: 12, attempts: [
+      { latUs: 120.31, latPct: 96.43, rps: 299448.34, rpsPct: 81.56 },
+      { latUs: 113.72, latPct: 96.86, rps: 292947.73, rpsPct: 83.19 },
+      { latUs: 136.14, latPct: 95.53, rps: 303005.38, rpsPct: 67.37 },
+    ]},
+    { domains: 8, clients: 64, threads: 12, attempts: [
+      { latUs: 275.87, latPct: 94.62, rps: 286181.09, rpsPct: 64.00 },
+      { latUs: 276.06, latPct: 94.53, rps: 290020.32, rpsPct: 59.68 },
+      { latUs: 275.89, latPct: 94.62, rps: 286757.01, rpsPct: 63.00 },
+    ]},
+    { domains: 8, clients: 128, threads: 12, attempts: [
+      { latUs: 516.42, latPct: 94.06, rps: 264090.45, rpsPct: 70.12 },
+      { latUs: 526.42, latPct: 93.43, rps: 266677.63, rpsPct: 64.27 },
+      { latUs: 521.38, latPct: 93.92, rps: 262602.01, rpsPct: 57.61 },
+    ]},
+    { domains: 8, clients: 256, threads: 12, attempts: [
+      { latUs: 1150, latPct: 88.04, rps: 231427.96, rpsPct: 65.24 },
+      { latUs: 1150, latPct: 92.42, rps: 229988.62, rpsPct: 73.04 },
+      { latUs: 1130, latPct: 91.92, rps: 235226.27, rpsPct: 70.42 },
+    ]},
+    { domains: 8, clients: 32, threads: 4, attempts: [
+      { latUs: 172.61, latPct: 94.89, rps: 304639.66, rpsPct: 60.28 },
+      { latUs: 152.10, latPct: 96.72, rps: 272204.15, rpsPct: 56.72 },
+      { latUs: 153.39, latPct: 96.09, rps: 297484.78, rpsPct: 59.45 },
+    ]},
+    { domains: 8, clients: 64, threads: 4, attempts: [
+      { latUs: 289.15, latPct: 94.51, rps: 287882.94, rpsPct: 66.44 },
+      { latUs: 299.36, latPct: 94.73, rps: 287477.42, rpsPct: 56.71 },
+      { latUs: 293.06, latPct: 94.32, rps: 287417.56, rpsPct: 58.00 },
+    ]},
+  ],
+  vif: [
+    { domains: 1, clients: 12, threads: 12, attempts: [
+      { latUs: 292.07, latPct: 63.81, rps: 40917.43, rpsPct: 63.71 },
+      { latUs: 289.84, latPct: 64.35, rps: 41230.61, rpsPct: 69.31 },
+      { latUs: 299.81, latPct: 65.10, rps: 39857.65, rpsPct: 68.21 },
+    ]},
+    { domains: 2, clients: 12, threads: 12, attempts: [
+      { latUs: 146.20, latPct: 75.40, rps: 81411.42, rpsPct: 67.55 },
+      { latUs: 147.84, latPct: 73.81, rps: 80503.94, rpsPct: 75.70 },
+      { latUs: 144.36, latPct: 53.25, rps: 82455.91, rpsPct: 66.75 },
+    ]},
+    { domains: 4, clients: 12, threads: 12, attempts: [
+      { latUs: 78.42, latPct: 99.40, rps: 160341.42, rpsPct: 91.40 },
+      { latUs: 79.79, latPct: 99.38, rps: 158982.14, rpsPct: 91.67 },
+      { latUs: 81.23, latPct: 99.25, rps: 158549.19, rpsPct: 91.25 },
+    ]},
+    { domains: 8, clients: 12, threads: 12, attempts: [
+      { latUs: 85.01, latPct: 98.77, rps: 156577.27, rpsPct: 91.67 },
+      { latUs: 77.52, latPct: 98.42, rps: 191322.44, rpsPct: 87.11 },
+      { latUs: 75.83, latPct: 98.47, rps: 191159.60, rpsPct: 91.61 },
+    ]},
+    { domains: 8, clients: 32, threads: 12, attempts: [
+      { latUs: 137.61, latPct: 98.53, rps: 187495.81, rpsPct: 74.88 },
+      { latUs: 132.52, latPct: 98.65, rps: 187875.86, rpsPct: 58.58 },
+      { latUs: 135.82, latPct: 98.90, rps: 186670.32, rpsPct: 83.33 },
+    ]},
+    { domains: 8, clients: 64, threads: 12, attempts: [
+      { latUs: 335.85, latPct: 97.57, rps: 175018.96, rpsPct: 70.84 },
+      { latUs: 363.29, latPct: 97.65, rps: 173275.45, rpsPct: 63.74 },
+      { latUs: 356.96, latPct: 98.02, rps: 173977.34, rpsPct: 62.85 },
+    ]},
+    { domains: 8, clients: 128, threads: 12, attempts: [
+      { latUs: 761.92, latPct: 85.79, rps: 159131.89, rpsPct: 68.64 },
+      { latUs: 770.80, latPct: 92.74, rps: 157596.40, rpsPct: 69.30 },
+      { latUs: 770.81, latPct: 88.89, rps: 157751.74, rpsPct: 63.53 },
+    ]},
+    { domains: 8, clients: 256, threads: 12, attempts: [
+      { latUs: 1880, latPct: 78.61, rps: 134303.06, rpsPct: 63.92 },
+      { latUs: 1880, latPct: 75.20, rps: 133830.88, rpsPct: 76.46 },
+      { latUs: 1900, latPct: 68.15, rps: 133068.67, rpsPct: 75.15 },
+    ]},
+    { domains: 8, clients: 32, threads: 4, attempts: [
+      { latUs: 178.77, latPct: 97.92, rps: 191074.67, rpsPct: 65.33 },
+      { latUs: 177.04, latPct: 98.61, rps: 191065.05, rpsPct: 56.00 },
+      { latUs: 184.92, latPct: 98.17, rps: 189689.10, rpsPct: 70.78 },
+    ]},
+    { domains: 8, clients: 64, threads: 4, attempts: [
+      { latUs: 374.37, latPct: 97.95, rps: 177832.95, rpsPct: 62.95 },
+      { latUs: 371.00, latPct: 93.07, rps: 178383.60, rpsPct: 66.37 },
+      { latUs: 373.27, latPct: 97.32, rps: 177777.87, rpsPct: 61.33 },
+    ]},
+  ],
+  "httpun+eio": [
+    { domains: 1, clients: 12, threads: 12, attempts: [
+      { latUs: 2150, latPct: 83.14, rps: 23566.44, rpsPct: 89.99 },
+      { latUs: 2210, latPct: 83.28, rps: 23240.62, rpsPct: 90.08 },
+      { latUs: 2250, latPct: 83.27, rps: 22992.66, rpsPct: 90.17 },
+    ]},
+    { domains: 2, clients: 12, threads: 12, attempts: [
+      { latUs: 2270, latPct: 86.13, rps: 44246.58, rpsPct: 89.76 },
+      { latUs: 2240, latPct: 85.89, rps: 43691.81, rpsPct: 89.96 },
+      { latUs: 2260, latPct: 86.24, rps: 43713.11, rpsPct: 89.33 },
+    ]},
+    { domains: 4, clients: 12, threads: 12, attempts: [
+      { latUs: 2680, latPct: 87.31, rps: 74439.51, rpsPct: 89.31 },
+      { latUs: 2590, latPct: 87.51, rps: 71189.82, rpsPct: 88.83 },
+      { latUs: 2490, latPct: 85.79, rps: 53957.00, rpsPct: 89.82 },
+    ]},
+    { domains: 8, clients: 12, threads: 12, attempts: [
+      { latUs: 2700, latPct: 85.25, rps: 97812.17, rpsPct: 88.40 },
+      { latUs: 2580, latPct: 85.60, rps: 90427.52, rpsPct: 88.92 },
+      { latUs: 2590, latPct: 85.99, rps: 90127.41, rpsPct: 88.31 },
+    ]},
+    { domains: 8, clients: 32, threads: 12, attempts: [
+      { latUs: 2680, latPct: 86.05, rps: 98589.41, rpsPct: 89.57 },
+      { latUs: 2710, latPct: 86.69, rps: 97215.50, rpsPct: 89.18 },
+      { latUs: 2660, latPct: 85.97, rps: 95854.64, rpsPct: 90.03 },
+    ]},
+    { domains: 8, clients: 64, threads: 12, attempts: [
+      { latUs: 3470, latPct: 86.04, rps: 105166.43, rpsPct: 90.12 },
+      { latUs: 3420, latPct: 86.15, rps: 96920.86, rpsPct: 90.56 },
+      { latUs: 3300, latPct: 86.15, rps: 90518.37, rpsPct: 90.33 },
+    ]},
+    { domains: 8, clients: 128, threads: 12, attempts: [
+      { latUs: 3870, latPct: 86.02, rps: 108686.93, rpsPct: 90.24 },
+      { latUs: 3940, latPct: 85.81, rps: 103329.04, rpsPct: 89.89 },
+      { latUs: 3930, latPct: 86.32, rps: 96327.52, rpsPct: 90.02 },
+    ]},
+    { domains: 8, clients: 256, threads: 12, attempts: [
+      { latUs: 4650, latPct: 85.72, rps: 105082.82, rpsPct: 89.57 },
+      { latUs: 4750, latPct: 85.82, rps: 103277.00, rpsPct: 89.83 },
+      { latUs: 4900, latPct: 85.76, rps: 99308.92, rpsPct: 89.94 },
+    ]},
+    { domains: 8, clients: 32, threads: 4, attempts: [
+      { latUs: 2930, latPct: 85.50, rps: 97593.32, rpsPct: 89.71 },
+      { latUs: 3030, latPct: 85.05, rps: 96591.98, rpsPct: 89.90 },
+      { latUs: 3090, latPct: 85.66, rps: 94456.97, rpsPct: 89.54 },
+    ]},
+    { domains: 8, clients: 64, threads: 4, attempts: [
+      { latUs: 3250, latPct: 86.35, rps: 96787.99, rpsPct: 90.10 },
+      { latUs: 3290, latPct: 85.82, rps: 90975.61, rpsPct: 90.16 },
+      { latUs: 3260, latPct: 85.48, rps: 94306.00, rpsPct: 90.08 },
+    ]},
+  ],
+  nginx: [
+    { domains: 1, clients: 12, threads: 12, attempts: [
+      { latUs: 61.90, latPct: 96.34, rps: 190329.81, rpsPct: 72.99 },
+      { latUs: 61.77, latPct: 88.40, rps: 190647.78, rpsPct: 80.34 },
+      { latUs: 60.99, latPct: 94.98, rps: 192098.10, rpsPct: 65.36 },
+    ]},
+    { domains: 2, clients: 12, threads: 12, attempts: [
+      { latUs: 34.16, latPct: 65.39, rps: 339631.42, rpsPct: 84.21 },
+      { latUs: 34.97, latPct: 72.29, rps: 332398.77, rpsPct: 72.80 },
+      { latUs: 34.01, latPct: 70.37, rps: 341239.19, rpsPct: 81.95 },
+    ]},
+    { domains: 4, clients: 12, threads: 12, attempts: [
+      { latUs: 24.92, latPct: 87.03, rps: 459989.61, rpsPct: 60.64 },
+      { latUs: 24.51, latPct: 89.10, rps: 471448.33, rpsPct: 57.33 },
+      { latUs: 24.44, latPct: 92.83, rps: 468375.92, rpsPct: 66.81 },
+    ]},
+    { domains: 8, clients: 12, threads: 12, attempts: [
+      { latUs: 19.79, latPct: 98.03, rps: 574249.64, rpsPct: 60.07 },
+      { latUs: 19.81, latPct: 96.86, rps: 572347.61, rpsPct: 62.68 },
+      { latUs: 19.50, latPct: 99.00, rps: 583214.18, rpsPct: 62.95 },
+    ]},
+    { domains: 8, clients: 32, threads: 12, attempts: [
+      { latUs: 29.57, latPct: 90.13, rps: 759297.39, rpsPct: 69.18 },
+      { latUs: 27.12, latPct: 92.37, rps: 816192.41, rpsPct: 67.34 },
+      { latUs: 28.53, latPct: 90.08, rps: 783033.37, rpsPct: 69.58 },
+    ]},
+    { domains: 8, clients: 64, threads: 12, attempts: [
+      { latUs: 60.96, latPct: 90.05, rps: 987026.17, rpsPct: 64.24 },
+      { latUs: 59.09, latPct: 75.04, rps: 989338.02, rpsPct: 66.37 },
+      { latUs: 64.13, latPct: 86.68, rps: 946537.36, rpsPct: 68.31 },
+    ]},
+    { domains: 8, clients: 128, threads: 12, attempts: [
+      { latUs: 111.31, latPct: 96.34, rps: 1069342.17, rpsPct: 69.67 },
+      { latUs: 116.47, latPct: 89.25, rps: 1038051.76, rpsPct: 63.20 },
+      { latUs: 118.27, latPct: 90.50, rps: 1061696.25, rpsPct: 64.73 },
+    ]},
+    { domains: 8, clients: 256, threads: 12, attempts: [
+      { latUs: 226.64, latPct: 75.06, rps: 1094142.47, rpsPct: 71.55 },
+      { latUs: 233.47, latPct: 86.52, rps: 1070324.12, rpsPct: 78.43 },
+      { latUs: 229.38, latPct: 84.58, rps: 1087358.25, rpsPct: 78.39 },
+    ]},
+  ],
+};
+
+// --- Helpers ---
+const servers = Object.keys(raw);
+const colors = {
+  httpcats: "#818cf8",
+  vif: "#34d399",
+  "httpun+eio": "#fb923c",
+  nginx: "#f87171",
+};
+function avg(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+function fmtLat(v) { return v >= 1000 ? (v/1000).toFixed(2) + " ms" : v.toFixed(1) + " µs"; }
+function fmtRps(v) { return v.toLocaleString("en-US", { maximumFractionDigits: 0 }); }
+function fmtRpsShort(v) {
+  if (v >= 1000000) return (v/1000000).toFixed(1) + "M";
+  return (v/1000).toFixed(0) + "k";
+}
+
+const tooltip = d3.select("#tooltip");
+function showTip(event, html) {
+  tooltip.html(html).style("opacity", 1)
+    .style("left", (event.pageX + 12) + "px")
+    .style("top", (event.pageY - 10) + "px");
+}
+function moveTip(event) {
+  tooltip.style("left", (event.pageX + 12) + "px").style("top", (event.pageY - 10) + "px");
+}
+function hideTip() { tooltip.style("opacity", 0); }
+
+const domainScaleData = {};
+for (const s of servers) {
+  domainScaleData[s] = [];
+  for (const cfg of raw[s]) {
+    if (cfg.clients === 12 && cfg.threads === 12) {
+      domainScaleData[s].push({
+        domains: cfg.domains,
+        rps: avg(cfg.attempts.map(a => a.rps)),
+        lat: avg(cfg.attempts.map(a => a.latUs)),
+      });
+    }
+  }
+  domainScaleData[s].sort((a, b) => a.domains - b.domains);
+}
+
+const configs8 = [];
+const configSet8 = new Set();
+for (const s of servers) {
+  for (const cfg of raw[s]) {
+    if (cfg.domains === 8) {
+      const key = `${cfg.clients}c/${cfg.threads}t`;
+      if (!configSet8.has(key)) { configSet8.add(key); configs8.push(key); }
+    }
+  }
+}
+
+const dataset8 = [];
+for (const config of configs8) {
+  const [clients, threads] = config.split("/").map(s => parseInt(s));
+  const entry = { config, clients, threads };
+  for (const s of servers) {
+    const match = raw[s].find(d => d.domains === 8 && d.clients === clients && d.threads === threads);
+    if (match) {
+      entry[s + "_rps"] = avg(match.attempts.map(a => a.rps));
+      entry[s + "_lat"] = avg(match.attempts.map(a => a.latUs));
+      entry[s + "_rps_vals"] = match.attempts.map(a => a.rps);
+      entry[s + "_lat_vals"] = match.attempts.map(a => a.latUs);
+      entry[s + "_rps_pct"] = avg(match.attempts.map(a => a.rpsPct));
+      entry[s + "_lat_pct"] = avg(match.attempts.map(a => a.latPct));
+    }
+  }
+  dataset8.push(entry);
+}
+
+{
+  const width = 880, height = 440;
+  const margin = { top: 20, right: 120, bottom: 60, left: 80 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+
+  const allDomains = [1, 2, 4, 8];
+  const allVals = servers.flatMap(s => domainScaleData[s].map(d => d.rps));
+
+  const svg = d3.select("#chart-domains").append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`).attr("width", "100%");
+  const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleLinear().domain([0.8, 8.5]).range([0, innerW]);
+  const y = d3.scaleLinear().domain([0, d3.max(allVals) * 1.1]).range([innerH, 0]);
+
+  g.append("g").attr("class", "grid")
+    .call(d3.axisLeft(y).ticks(6).tickSize(-innerW).tickFormat(""));
+  g.append("g").attr("class", "axis")
+    .attr("transform", `translate(0,${innerH})`)
+    .call(d3.axisBottom(x).tickValues(allDomains).tickFormat(d => d + " dom."));
+  g.append("g").attr("class", "axis")
+    .call(d3.axisLeft(y).ticks(6).tickFormat(d => fmtRpsShort(d)));
+
+  g.append("text").attr("x", innerW / 2).attr("y", innerH + 45)
+    .attr("fill", "#94a3b8").attr("text-anchor", "middle").attr("font-size", "12px")
+    .text("Number of domains");
+  g.append("text").attr("transform", "rotate(-90)")
+    .attr("y", -60).attr("x", -innerH / 2)
+    .attr("fill", "#94a3b8").attr("text-anchor", "middle").attr("font-size", "12px")
+    .text("Requests / second");
+
+  const refRps1 = avg(servers.filter(s => domainScaleData[s].length > 0)
+    .map(s => domainScaleData[s][0]?.rps || 0));
+
+  const line = d3.line().curve(d3.curveMonotoneX);
+
+  for (const s of servers) {
+    const pts = domainScaleData[s];
+    if (pts.length < 2) continue;
+
+    g.append("path")
+      .datum(pts)
+      .attr("d", line.x(d => x(d.domains)).y(d => y(d.rps)))
+      .attr("fill", "none").attr("stroke", colors[s])
+      .attr("stroke-width", 2.5).attr("opacity", 0.85);
+
+    g.selectAll(null)
+      .data(pts).enter().append("circle")
+      .attr("cx", d => x(d.domains)).attr("cy", d => y(d.rps))
+      .attr("r", 5).attr("fill", colors[s])
+      .attr("stroke", "#0f172a").attr("stroke-width", 1.5)
+      .on("mouseover", function(event, d) {
+        showTip(event, `<strong>${s}</strong><br>${d.domains} domains<br>Req/s: ${fmtRps(d.rps)}<br>Latency: ${fmtLat(d.lat)}`);
+      })
+      .on("mousemove", moveTip).on("mouseout", hideTip);
+
+    const last = pts[pts.length - 1];
+    g.append("text")
+      .attr("x", x(last.domains) + 8).attr("y", y(last.rps) + 4)
+      .attr("fill", colors[s]).attr("font-size", "11px").text(s);
+  }
+
+  const legend = d3.select("#legend-domains");
+  for (const s of servers) {
+    const item = legend.append("div").attr("class", "legend-item");
+    item.append("div").attr("class", "legend-swatch").style("background", colors[s]);
+    item.append("span").text(s);
+  }
+}
+
+function makeGroupedBar(containerId, legendId, metric, unit) {
+  const container = d3.select(containerId);
+  const width = 1100, height = 480;
+  const margin = { top: 40, right: 30, bottom: 60, left: 80 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+  const pctKey = metric + "_pct";
+
+  const svg = container.append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`).attr("width", "100%");
+  const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const x0 = d3.scaleBand().domain(configs8).range([0, innerW]).paddingInner(0.2).paddingOuter(0.1);
+  const activeServers = servers.filter(s => dataset8.some(d => d[s + metric] != null));
+  const x1 = d3.scaleBand().domain(activeServers).range([0, x0.bandwidth()]).padding(0.08);
+
+  const maxVal = d3.max(dataset8, d => d3.max(activeServers, s => d[s + metric] || 0));
+  const y = d3.scaleLinear().domain([0, maxVal * 1.15]).range([innerH, 0]);
+
+  g.append("g").attr("class", "grid")
+    .call(d3.axisLeft(y).ticks(6).tickSize(-innerW).tickFormat(""));
+  g.append("g").attr("class", "axis")
+    .attr("transform", `translate(0,${innerH})`)
+    .call(d3.axisBottom(x0)).selectAll("text").style("font-size", "12px");
+  g.append("g").attr("class", "axis")
+    .call(d3.axisLeft(y).ticks(6).tickFormat(d => fmtRpsShort(d)));
+  g.append("text").attr("transform", "rotate(-90)")
+    .attr("y", -60).attr("x", -innerH / 2)
+    .attr("fill", "#94a3b8").attr("text-anchor", "middle").attr("font-size", "12px")
+    .text(unit);
+
+  const configGroups = g.selectAll(".cg")
+    .data(dataset8).enter().append("g")
+    .attr("transform", d => `translate(${x0(d.config)},0)`);
+
+  configGroups.selectAll("rect")
+    .data(d => activeServers.map(s => ({
+      server: s, value: d[s + metric], pct: d[s + pctKey],
+      config: d.config, vals: d[s + metric + "_vals"]
+    })))
+    .enter().append("rect")
+    .attr("x", d => x1(d.server)).attr("width", x1.bandwidth())
+    .attr("y", d => d.value ? y(d.value) : innerH)
+    .attr("height", d => d.value ? innerH - y(d.value) : 0)
+    .attr("fill", d => colors[d.server]).attr("rx", 2).attr("opacity", 0.85)
+    .on("mouseover", function(event, d) {
+      d3.select(this).attr("opacity", 1);
+      if (!d.value) return;
+      const valStr = metric === "_rps" ? fmtRps(d.value) : fmtLat(d.value);
+      const valsStr = d.vals ? d.vals.map(v => metric === "_rps" ? fmtRps(v) : fmtLat(v)).join(", ") : "";
+      const pctStr = d.pct ? d.pct.toFixed(1) + "%" : "";
+      showTip(event, `<strong>${d.server}</strong> — ${d.config}<br>Average: ${valStr}<br>±σ: ${pctStr}<br>Runs: ${valsStr}`);
+    })
+    .on("mousemove", moveTip)
+    .on("mouseout", function() { d3.select(this).attr("opacity", 0.85); hideTip(); });
+
+  configGroups.selectAll(".val-label")
+    .data(d => activeServers.map(s => ({ server: s, value: d[s + metric], pct: d[s + pctKey] })))
+    .enter().append("text").attr("class", "val-label")
+    .attr("transform", d => {
+      const cx = x1(d.server) + x1.bandwidth() / 2;
+      const cy = d.value ? y(d.value) - 6 : innerH;
+      return `translate(${cx},${cy}) rotate(-45)`;
+    })
+    .attr("text-anchor", "start")
+    .attr("fill", "#cbd5e1").attr("font-size", "9px")
+    .text(d => {
+      if (!d.value) return "";
+      const valStr = metric === "_rps" ? fmtRpsShort(d.value) : fmtLat(d.value);
+      const pctStr = d.pct ? " (" + d.pct.toFixed(0) + "%)" : "";
+      return valStr + pctStr;
+    });
+
+  const legend = d3.select(legendId);
+  for (const s of activeServers) {
+    const item = legend.append("div").attr("class", "legend-item");
+    item.append("div").attr("class", "legend-swatch").style("background", colors[s]);
+    item.append("span").text(s);
+  }
+}
+
+makeGroupedBar("#chart-rps", "#legend-rps", "_rps", "Requests / second");
+makeGroupedBar("#chart-lat", "#legend-lat", "_lat", "Latency (µs)");
+
+{
+  const width = 880, height = 480;
+  const margin = { top: 20, right: 30, bottom: 60, left: 80 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+
+  const points = [];
+  for (const s of servers) {
+    for (const cfg of raw[s]) {
+      for (const a of cfg.attempts) {
+        points.push({
+          server: s, domains: cfg.domains, clients: cfg.clients,
+          threads: cfg.threads, rps: a.rps, latUs: a.latUs,
+          config: `${cfg.domains}d/${cfg.clients}c/${cfg.threads}t`
+        });
+      }
+    }
+  }
+
+  const svg = d3.select("#chart-scatter").append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`).attr("width", "100%");
+  const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleLinear()
+    .domain([0, d3.max(points, d => d.rps) * 1.1]).range([0, innerW]);
+  const y = d3.scaleLog()
+    .domain([d3.min(points, d => d.latUs) * 0.7, d3.max(points, d => d.latUs) * 1.3])
+    .range([innerH, 0]);
+  const rScale = d3.scaleSqrt().domain([1, 8]).range([4, 10]);
+
+  g.append("g").attr("class", "grid")
+    .call(d3.axisLeft(y).ticks(6).tickSize(-innerW).tickFormat(""));
+  g.append("g").attr("class", "grid")
+    .call(d3.axisBottom(x).ticks(6).tickSize(-innerH).tickFormat(""))
+    .attr("transform", `translate(0,${innerH})`);
+
+  g.append("g").attr("class", "axis")
+    .attr("transform", `translate(0,${innerH})`)
+    .call(d3.axisBottom(x).ticks(6).tickFormat(d => fmtRpsShort(d)));
+  g.append("g").attr("class", "axis")
+    .call(d3.axisLeft(y).ticks(6).tickFormat(d => fmtLat(d)));
+
+  g.append("text").attr("x", innerW / 2).attr("y", innerH + 45)
+    .attr("fill", "#94a3b8").attr("text-anchor", "middle").attr("font-size", "12px")
+    .text("Requests / second");
+  g.append("text").attr("transform", "rotate(-90)")
+    .attr("y", -60).attr("x", -innerH / 2)
+    .attr("fill", "#94a3b8").attr("text-anchor", "middle").attr("font-size", "12px")
+    .text("Latency (log scale)");
+  g.append("text")
+    .attr("x", innerW - 10).attr("y", innerH - 10)
+    .attr("fill", "#4ade80").attr("text-anchor", "end").attr("font-size", "11px").attr("opacity", 0.6)
+    .text("← ideal (high throughput, low latency) ↓");
+
+  g.selectAll("circle")
+    .data(points).enter().append("circle")
+    .attr("cx", d => x(d.rps)).attr("cy", d => y(d.latUs))
+    .attr("r", d => rScale(d.domains))
+    .attr("fill", d => colors[d.server]).attr("opacity", 0.7)
+    .attr("stroke", "#0f172a").attr("stroke-width", 1)
+    .on("mouseover", function(event, d) {
+      d3.select(this).attr("opacity", 1).attr("stroke", "#fff");
+      showTip(event, `<strong>${d.server}</strong><br>${d.config}<br>Req/s: ${fmtRps(d.rps)}<br>Latency: ${fmtLat(d.latUs)}`);
+    })
+    .on("mousemove", moveTip)
+    .on("mouseout", function() {
+      d3.select(this).attr("opacity", 0.7).attr("stroke", "#0f172a"); hideTip();
+    });
+
+  const legend = d3.select("#legend-scatter");
+  for (const s of servers) {
+    const item = legend.append("div").attr("class", "legend-item");
+    item.append("div").attr("class", "legend-swatch").style("background", colors[s]).style("border-radius", "50%");
+    item.append("span").text(s);
+  }
+}
+
+{
+  const width = 880, height = 360;
+  const margin = { top: 30, right: 140, bottom: 60, left: 110 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+
+  const heatConfigs = [];
+  const heatConfigSet = new Set();
+  for (const s of servers) {
+    for (const cfg of raw[s]) {
+      const key = `${cfg.domains}d/${cfg.clients}c/${cfg.threads}t`;
+      if (!heatConfigSet.has(key)) { heatConfigSet.add(key); heatConfigs.push(key); }
+    }
+  }
+
+  const cells = [];
+  for (const s of servers) {
+    for (const cfg of raw[s]) {
+      const key = `${cfg.domains}d/${cfg.clients}c/${cfg.threads}t`;
+      cells.push({
+        server: s, config: key,
+        latPct: avg(cfg.attempts.map(a => a.latPct)),
+        rpsPct: avg(cfg.attempts.map(a => a.rpsPct)),
+      });
+    }
+  }
+
+  const svg = d3.select("#chart-heatmap").append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`).attr("width", "100%");
+  const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const xH = d3.scaleBand().domain(heatConfigs).range([0, innerW]).padding(0.06);
+  const yH = d3.scaleBand().domain(servers).range([0, innerH]).padding(0.08);
+
+  const allPct = cells.map(c => c.latPct);
+  const colorScale = d3.scaleSequential()
+    .domain([d3.min(allPct) - 1, d3.max(allPct) + 1])
+    .interpolator(d3.interpolateYlGn);
+
+  g.append("g").attr("class", "axis")
+    .attr("transform", `translate(0,${innerH})`)
+    .call(d3.axisBottom(xH))
+    .selectAll("text").style("font-size", "9px")
+    .attr("transform", "rotate(-35)").attr("text-anchor", "end");
+  g.append("g").attr("class", "axis")
+    .call(d3.axisLeft(yH))
+    .selectAll("text").style("font-size", "12px").style("fill", d => colors[d] || "#94a3b8");
+
+  g.selectAll(".heat-cell")
+    .data(cells).enter().append("rect")
+    .attr("x", d => xH(d.config)).attr("y", d => yH(d.server))
+    .attr("width", xH.bandwidth()).attr("height", yH.bandwidth())
+    .attr("fill", d => colorScale(d.latPct)).attr("rx", 3)
+    .on("mouseover", function(event, d) {
+      showTip(event, `<strong>${d.server}</strong> — ${d.config}<br>±σ Latency: ${d.latPct.toFixed(1)}%<br>±σ Req/s: ${d.rpsPct.toFixed(1)}%`);
+    })
+    .on("mousemove", moveTip).on("mouseout", hideTip);
+
+  g.selectAll(".heat-text")
+    .data(cells).enter().append("text")
+    .attr("x", d => xH(d.config) + xH.bandwidth() / 2)
+    .attr("y", d => yH(d.server) + yH.bandwidth() / 2 + 4)
+    .attr("text-anchor", "middle")
+    .attr("fill", d => d.latPct > 90 ? "#0f172a" : "#f1f5f9")
+    .attr("font-size", xH.bandwidth() > 50 ? "11px" : "9px")
+    .attr("font-weight", "600")
+    .text(d => d.latPct.toFixed(0) + "%");
+
+  // Color scale legend
+  const legendG = svg.append("g")
+    .attr("transform", `translate(${width - margin.right + 20},${margin.top})`);
+  const defs = svg.append("defs");
+  const grad = defs.append("linearGradient")
+    .attr("id", "heat-grad").attr("x1", "0").attr("y1", "1").attr("x2", "0").attr("y2", "0");
+  grad.append("stop").attr("offset", "0%").attr("stop-color", colorScale(d3.min(allPct) - 1));
+  grad.append("stop").attr("offset", "100%").attr("stop-color", colorScale(d3.max(allPct) + 1));
+  legendG.append("rect").attr("width", 15).attr("height", innerH)
+    .attr("fill", "url(#heat-grad)").attr("rx", 3);
+  const lScale = d3.scaleLinear()
+    .domain([d3.min(allPct) - 1, d3.max(allPct) + 1]).range([innerH, 0]);
+  legendG.append("g").attr("class", "axis")
+    .attr("transform", "translate(15,0)")
+    .call(d3.axisRight(lScale).ticks(5).tickFormat(d => d.toFixed(0) + "%"));
+  legendG.append("text").attr("x", 7).attr("y", -10)
+    .attr("text-anchor", "middle").attr("fill", "#94a3b8").attr("font-size", "10px")
+    .text("±σ lat.");
+}
+
+{
+  const tableContainer = d3.select("#table-container");
+  const table = tableContainer.append("table");
+  const thead = table.append("thead");
+  const tbody = table.append("tbody");
+
+  tableContainer.append("div").attr("class", "table-legend")
+    .html('<span class="best">■ Overall best</span> <span class="best-ocaml">■ Best OCaml</span>');
+
+  thead.append("tr").selectAll("th")
+    .data(["Config", "Server", "Req/s (avg)", "±σ Req/s", "Latency (avg)", "±σ Latency"])
+    .enter().append("th").text(d => d);
+
+  const allConfigs = [];
+  const allConfigSet = new Set();
+  for (const s of servers) {
+    for (const cfg of raw[s]) {
+      const key = `${cfg.domains}d/${cfg.clients}c/${cfg.threads}t`;
+      if (!allConfigSet.has(key)) { allConfigSet.add(key); allConfigs.push({ key, domains: cfg.domains, clients: cfg.clients, threads: cfg.threads }); }
+    }
+  }
+  allConfigs.sort((a, b) => a.domains - b.domains || a.clients - b.clients || a.threads - b.threads);
+
+  const ocamlServers = ["httpcats", "vif", "httpun+eio"];
+
+  for (const cfgInfo of allConfigs) {
+    const { key, domains, clients, threads } = cfgInfo;
+
+    let bestRps = 0, bestLat = Infinity;
+    let bestOcamlRps = 0, bestOcamlLat = Infinity;
+    const serverData = [];
+    for (const s of servers) {
+      const match = raw[s].find(d => d.domains === domains && d.clients === clients && d.threads === threads);
+      if (match) {
+        const rps = avg(match.attempts.map(a => a.rps));
+        const lat = avg(match.attempts.map(a => a.latUs));
+        const rpsPct = avg(match.attempts.map(a => a.rpsPct));
+        const latPct = avg(match.attempts.map(a => a.latPct));
+        serverData.push({ server: s, rps, lat, rpsPct, latPct });
+        if (rps > bestRps) bestRps = rps;
+        if (lat < bestLat) bestLat = lat;
+        if (ocamlServers.includes(s)) {
+          if (rps > bestOcamlRps) bestOcamlRps = rps;
+          if (lat < bestOcamlLat) bestOcamlLat = lat;
+        }
+      }
+    }
+
+    let first = true;
+    for (const sd of serverData) {
+      const tr = tbody.append("tr");
+      if (first) tr.attr("class", "config-group");
+
+      tr.append("td").attr("class", first ? "config-label" : "").text(first ? key : "");
+      tr.append("td").text(sd.server).style("color", colors[sd.server]);
+
+      const rpsCell = tr.append("td").text(fmtRps(sd.rps));
+      if (sd.rps === bestRps) {
+        rpsCell.attr("class", "best");
+      } else if (ocamlServers.includes(sd.server) && sd.rps === bestOcamlRps) {
+        rpsCell.attr("class", "best-ocaml");
+      }
+
+      tr.append("td").text(sd.rpsPct.toFixed(1) + "%");
+
+      const latCell = tr.append("td").text(fmtLat(sd.lat));
+      if (sd.lat === bestLat) {
+        latCell.attr("class", "best");
+      } else if (ocamlServers.includes(sd.server) && sd.lat === bestOcamlLat) {
+        latCell.attr("class", "best-ocaml");
+      }
+
+      tr.append("td").text(sd.latPct.toFixed(1) + "%");
+
+      first = false;
+    }
+  }
+}
+</script>
+</body>
+</html>
