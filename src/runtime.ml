@@ -1,7 +1,5 @@
 let src = Logs.Src.create "runtime"
-let _minor = (Sys.word_size / 8 * 256) - 1
-
-external reraise : exn -> 'a = "%reraise"
+let _minor = 16384 - 1
 
 module Log = (val Logs.src_log src : Logs.LOG)
 module Flow = Flow
@@ -10,13 +8,13 @@ module type S = sig
   type t
 
   val next_read_operation : t -> [ `Read | `Yield | `Close | `Upgrade ]
-  val read : t -> Bigstringaf.t -> off:int -> len:int -> int
-  val read_eof : t -> Bigstringaf.t -> off:int -> len:int -> int
+  val read : t -> Bstr.t -> off:int -> len:int -> int
+  val read_eof : t -> Bstr.t -> off:int -> len:int -> int
   val yield_reader : t -> (unit -> unit) -> unit
 
   val next_write_operation :
        t
-    -> [ `Write of Bigstringaf.t Faraday.iovec list
+    -> [ `Write of Bstr.t Faraday.iovec list
        | `Close of int
        | `Yield
        | `Upgrade ]
@@ -31,13 +29,13 @@ module Buffer : sig
   type t
 
   val create : int -> t
-  val get : t -> fn:(Bigstringaf.t -> off:int -> len:int -> int) -> int
-  val put : t -> fn:(Bigstringaf.t -> off:int -> len:int -> int) -> int
+  val get : t -> fn:(Bstr.t -> off:int -> len:int -> int) -> int
+  val put : t -> fn:(Bstr.t -> off:int -> len:int -> int) -> int
 end = struct
-  type t = { mutable buffer: Bigstringaf.t; mutable off: int; mutable len: int }
+  type t = { mutable buffer: Bstr.t; mutable off: int; mutable len: int }
 
   let create size =
-    let buffer = Bigstringaf.create size in
+    let buffer = Bstr.create size in
     { buffer; off= 0; len= 0 }
 
   let compress t =
@@ -46,7 +44,7 @@ end = struct
       t.len <- 0
     end
     else if t.off > 0 then begin
-      Bigstringaf.blit t.buffer ~src_off:t.off t.buffer ~dst_off:0 ~len:t.len;
+      Bstr.blit t.buffer ~src_off:t.off t.buffer ~dst_off:0 ~len:t.len;
       t.off <- 0
     end
 
@@ -61,11 +59,11 @@ end = struct
     compress t;
     let off = t.off + t.len in
     let buf = t.buffer in
-    if Bigstringaf.length buf = t.len then begin
-      t.buffer <- Bigstringaf.create (2 * Bigstringaf.length buf);
-      Bigstringaf.blit buf ~src_off:t.off t.buffer ~dst_off:0 ~len:t.len
+    if Bstr.length buf = t.len then begin
+      t.buffer <- Bstr.create (2 * Bstr.length buf);
+      Bstr.blit buf ~src_off:t.off t.buffer ~dst_off:0 ~len:t.len
     end;
-    let n = fn t.buffer ~off ~len:(Bigstringaf.length t.buffer - off) in
+    let n = fn t.buffer ~off ~len:(Bstr.length t.buffer - off) in
     t.len <- t.len + n;
     n
 end
@@ -87,8 +85,7 @@ let rec terminate orphans =
 
 let rec clean orphans =
   match Miou.care orphans with
-  | None -> Miou.yield ()
-  | Some None -> Miou.yield ()
+  | None | Some None -> ()
   | Some (Some prm) -> begin
       match Miou.await prm with
       | Ok () -> clean orphans
@@ -118,37 +115,30 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
      We could check before attempting to shutdown the connection instead of
      ignoring the exception that may have been raised. *)
 
-  let recv flow buffer =
+  let recv flow read_buf buffer =
     let bytes_read =
       Buffer.put buffer ~fn:(fun bstr ~off:dst_off ~len ->
           let len = min len _minor in
-          let buf = Bytes.create len in
-          try
-            let len' = Flow.read flow buf ~off:0 ~len in
-            Bigstringaf.blit_from_bytes buf ~src_off:0 bstr ~dst_off ~len:len';
-            len'
-          with exn -> Flow.close flow; reraise exn)
+          let len' = Flow.read flow read_buf ~off:0 ~len in
+          Bstr.blit_from_bytes read_buf ~src_off:0 bstr ~dst_off ~len:len';
+          len')
     in
     if bytes_read = 0 then `Eof else `Ok bytes_read
 
-  let rec split acc bstr off len =
-    if len <= _minor then List.rev (Bigstringaf.substring bstr ~off ~len :: acc)
-    else
-      let len' = min len _minor in
-      let str = Bigstringaf.substring bstr ~off ~len:len' in
-      split (str :: acc) bstr (off + len') (len - len')
-
-  let writev flow bstrs =
-    let strss =
-      List.map
-        (fun { Faraday.buffer; off; len } -> split [] buffer off len)
-        bstrs
-    in
+  let writev flow write_buf bstrs =
     let len = List.fold_left (fun a { Faraday.len; _ } -> a + len) 0 bstrs in
-    try
-      List.iter (List.iter (Flow.write flow)) strss;
-      `Ok len
-    with
+    let fn { Faraday.buffer; off; len } =
+      let rec go src_off len =
+        if len > 0 then begin
+          let n = Int.min len _minor in
+          Bstr.blit_to_bytes buffer ~src_off write_buf ~dst_off:0 ~len:n;
+          Flow.write flow ~off:0 ~len:n (Bytes.unsafe_to_string write_buf);
+          go (src_off + n) (len - n)
+        end
+      in
+      go off len
+    in
+    try List.iter fn bstrs; `Ok len with
     | Closed_by_peer -> `Closed
     | _exn -> Flow.close flow; `Closed
 
@@ -158,6 +148,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     ; flow: Flow.t
     ; tasks: (unit -> unit) Queue.t
     ; buffer: Buffer.t
+    ; read_buf: bytes
+    ; write_buf: bytes
     ; stop: bool ref
     ; upgrade: unit Miou.Computation.t
     ; lock: Miou.Mutex.t
@@ -168,15 +160,10 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let rec protected () =
       match Runtime.next_read_operation t.conn with
       | `Read ->
-          Log.debug (fun m -> m ~tags:t.tags "+reader");
           let fn =
-            match recv t.flow t.buffer with
-            | `Eof ->
-                Log.debug (fun m -> m ~tags:t.tags "+reader eof");
-                Runtime.read_eof t.conn
-            | `Ok len ->
-                Log.debug (fun m -> m ~tags:t.tags "+reader %d byte(s)" len);
-                Runtime.read t.conn
+            match recv t.flow t.read_buf t.buffer with
+            | `Eof -> Runtime.read_eof t.conn
+            | `Ok _len -> Runtime.read t.conn
           in
           let _ = Buffer.get t.buffer ~fn in
           protected ()
@@ -186,17 +173,12 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             Queue.push go t.tasks;
             Miou.Condition.signal t.cond
           in
-          Log.debug (fun m -> m ~tags:t.tags "+reader yield");
           Runtime.yield_reader t.conn k
       | `Close ->
           shutdown t.flow `read;
-          t.stop := true;
-          Log.debug (fun m -> m ~tags:t.tags "+reader closed")
-      | `Upgrade ->
-          Log.debug (fun m -> m ~tags:t.tags "+reader upgrade");
-          ignore (Miou.Computation.try_return t.upgrade ())
+          t.stop := true
+      | `Upgrade -> ignore (Miou.Computation.try_return t.upgrade ())
     and finally () =
-      Log.debug (fun m -> m ~tags:t.tags "+reader signals");
       Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
     and go () = Fun.protect ~finally protected in
     go
@@ -205,10 +187,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let rec protected () =
       match Runtime.next_write_operation t.conn with
       | `Write iovecs ->
-          let fn acc { Faraday.len; _ } = acc + len in
-          let len = List.fold_left fn 0 iovecs in
-          Log.debug (fun m -> m ~tags:t.tags "+write %d byte(s)" len);
-          writev t.flow iovecs |> Runtime.report_write_result t.conn;
+          writev t.flow t.write_buf iovecs |> Runtime.report_write_result t.conn;
           protected ()
       | `Yield ->
           let k () =
@@ -216,17 +195,12 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             Queue.push go t.tasks;
             Miou.Condition.signal t.cond
           in
-          Log.debug (fun m -> m ~tags:t.tags "+writer yield");
           Runtime.yield_writer t.conn k
       | `Close _ ->
           shutdown t.flow `write;
-          t.stop := true;
-          Log.debug (fun m -> m ~tags:t.tags "+writer closed")
-      | `Upgrade ->
-          Log.debug (fun m -> m ~tags:t.tags "+writer upgrade");
-          ignore (Miou.Computation.try_return t.upgrade ())
+          t.stop := true
+      | `Upgrade -> ignore (Miou.Computation.try_return t.upgrade ())
     and finally () =
-      Log.debug (fun m -> m ~tags:t.tags "+writer signals");
       Miou.Mutex.protect t.lock @@ fun () -> Miou.Condition.signal t.cond
     and go () = Fun.protect ~finally protected in
     go
@@ -255,7 +229,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
 
   let rec clean tags error conn orphans =
     match Miou.care orphans with
-    | Some None | None -> Miou.yield ()
+    | Some None | None -> ()
     | Some (Some prm) -> begin
         match Miou.await prm with
         | Ok () -> clean tags error conn orphans
@@ -286,6 +260,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   let run conn ?(tags = Logs.Tag.empty) ?(read_buffer_size = _minor) ?upgrade
       flow =
     let buffer = Buffer.create read_buffer_size in
+    let read_buf = Bytes.create _minor in
+    let write_buf = Bytes.create _minor in
     let s_rd = ref false and s_wr = ref false and error = ref false in
     let u_rd = Miou.Computation.create () in
     let u_wr = Miou.Computation.create () in
@@ -348,11 +324,37 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     in
     let rd =
       let stop = s_rd and upgrade = u_rd in
-      reader { tags; conn; flow; tasks; buffer; stop; upgrade; lock; cond }
+      reader
+        {
+          tags
+        ; conn
+        ; flow
+        ; tasks
+        ; buffer
+        ; read_buf
+        ; write_buf
+        ; stop
+        ; upgrade
+        ; lock
+        ; cond
+        }
     in
     let wr =
       let stop = s_wr and upgrade = u_wr in
-      writer { tags; conn; flow; tasks; buffer; stop; upgrade; lock; cond }
+      writer
+        {
+          tags
+        ; conn
+        ; flow
+        ; tasks
+        ; buffer
+        ; read_buf
+        ; write_buf
+        ; stop
+        ; upgrade
+        ; lock
+        ; cond
+        }
     in
     Queue.push rd tasks;
     Queue.push wr tasks;

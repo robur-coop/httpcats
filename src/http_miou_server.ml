@@ -32,7 +32,12 @@ module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
 module C = Runtime.Make (TLS) (H2_Server_connection)
 
 type error = Httpcats_core.Server.error
-type stop = Miou.Mutex.t * Miou.Condition.t * bool ref
+
+type stop = {
+    mutex: Miou.Mutex.t
+  ; condition: Miou.Condition.t
+  ; flag: bool Atomic.t
+}
 
 let pp_error ppf = function
   | `V1 `Bad_request -> Fmt.string ppf "Bad HTTP/1.1 request"
@@ -141,15 +146,20 @@ let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
   let conn =
     H1.Server_connection.create ~config ~error_handler request_handler
   in
-  (* NOTE(dinosaure): see the module [TCP_and_H1] and the fake shutdown. We must
-     finalize the process with [Miou_unix.close flow] — and avoid a fd leak. At
-     the end, the flow is only shutdown on the write side. *)
-  let finally () = Miou_unix.close flow in
-  Fun.protect ~finally @@ fun () ->
-  let tags = Logs.Tag.empty in
-  let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
-  let tags = Logs.Tag.add peer (Fmt.str "http:%a" pp_sockaddr sockaddr) tags in
-  Miou.await_exn (B.run conn ~tags ~read_buffer_size ?upgrade flow)
+  let finally flow = try Miou_unix.close flow with _exn -> () in
+  let res = Miou.Ownership.create ~finally flow in
+  Miou.Ownership.own res;
+  let tags =
+    match Logs.Src.level src with
+    | Some Logs.Debug ->
+        let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
+        Logs.Tag.add peer
+          (Fmt.str "http:%a" pp_sockaddr sockaddr)
+          Logs.Tag.empty
+    | _ -> Logs.Tag.empty
+  in
+  Miou.await_exn (B.run conn ~tags ~read_buffer_size ?upgrade flow);
+  Miou.Ownership.release res
 
 let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
     ~user's_handler flow =
@@ -199,42 +209,53 @@ let rec clean_up orphans =
 
 exception Stop
 
-let rec wait ((m, c, v) as stop) () =
+let rec wait ({ mutex; condition; flag } as stop) () =
   let value =
-    Miou.Mutex.protect m @@ fun () ->
-    while not !v do
-      Miou.Condition.wait c m
+    Miou.Mutex.protect mutex @@ fun () ->
+    while Atomic.get flag = false do
+      Miou.Condition.wait condition mutex
     done;
-    !v
+    Atomic.get flag
   in
   if value then raise Stop else wait stop ()
 
-let stop () = (Miou.Mutex.create (), Miou.Condition.create (), ref false)
+let stop () =
+  let mutex = Miou.Mutex.create () in
+  let condition = Miou.Condition.create () in
+  let flag = Atomic.make false in
+  { mutex; condition; flag }
 
-let switch (m, c, v) =
-  Miou.Mutex.protect m @@ fun () ->
-  v := true;
-  Miou.Condition.broadcast c
+let switch { mutex; condition; flag } =
+  Miou.Mutex.protect mutex @@ fun () ->
+  Atomic.set flag true;
+  Miou.Condition.broadcast condition
 
 let accept_or_stop ?stop file_descr =
   match stop with
   | None -> Some (Miou_unix.accept file_descr)
-  | Some stop -> (
-      let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
-      let stop = Miou.async (wait stop) in
-      Log.debug (fun m -> m "waiting for a client");
-      match Miou.await_first [ accept; stop ] with
-      | Ok (fd, sockaddr) -> Some (fd, sockaddr)
-      | Error Stop -> None
-      | Error exn ->
-          Log.err (fun m ->
-              m "unexpected exception: %S" (Printexc.to_string exn));
-          raise exn)
+  | Some s -> begin
+      if Atomic.get s.flag then None
+      else
+        let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
+        let stop = Miou.async (wait s) in
+        Log.debug (fun m -> m "waiting for a client");
+        match Miou.await_first [ accept; stop ] with
+        | Ok (fd, _sockaddr) when Atomic.get s.flag -> Miou_unix.close fd; None
+        | Ok (fd, sockaddr) -> Some (fd, sockaddr)
+        | Error Stop -> None
+        | Error _exn when Atomic.get s.flag -> None
+        | Error exn ->
+            Log.err (fun m ->
+                m "unexpected exception: %S" (Printexc.to_string exn));
+            raise exn
+    end
 
 let pp_sockaddr ppf = function
   | Unix.ADDR_UNIX str -> Fmt.pf ppf "<%s>" str
   | Unix.ADDR_INET (inet_addr, port) ->
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
+
+let inhibit fn = try fn () with _exn -> ()
 
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
@@ -245,15 +266,21 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     else ignore (Miou.async ~orphans fn)
   in
   let rec go orphans file_descr =
+    clean_up orphans;
     match accept_or_stop ?stop file_descr with
+    | exception Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE), _, _) ->
+        Log.warn (fun m -> m "too many open files, backing off");
+        Miou.yield ();
+        go orphans file_descr
     | None ->
         Log.debug (fun m -> m "stop the server");
         Runtime.terminate orphans;
         Miou_unix.close file_descr
     | Some (fd', sockaddr) ->
+        let socket = Miou_unix.to_file_descr fd' in
+        inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         Log.debug (fun m ->
             m "receive a connection from: %a" pp_sockaddr sockaddr);
-        clean_up orphans;
         call ~orphans begin fun () ->
             http_1_1_server_connection ~config ~user's_error_handler ?upgrade
               ~user's_handler fd'
@@ -291,10 +318,16 @@ let with_tls ?(parallel = true) ?stop
     else ignore (Miou.async ~orphans fn)
   in
   let rec go orphans file_descr =
+    clean_up orphans;
     match accept_or_stop ?stop file_descr with
+    | exception Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE), _, _) ->
+        Log.warn (fun m -> m "too many open files, backing off");
+        Miou.yield ();
+        go orphans file_descr
     | None -> Runtime.terminate orphans; Miou_unix.close file_descr
     | Some (fd', _sockaddr) ->
-        clean_up orphans;
+        let socket = Miou_unix.to_file_descr fd' in
+        inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         let fn () =
           try
             let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
