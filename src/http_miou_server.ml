@@ -1,5 +1,4 @@
 open Http_miou_unix
-module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
 
 let peer = Logs.Tag.def ~doc:"HTTPcats peer" "httpcats.peer" Fmt.string
 
@@ -28,6 +27,7 @@ module H2_Server_connection = struct
          | `Upgrade ])
 end
 
+module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
 module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
 module C = Runtime.Make (TLS) (H2_Server_connection)
 
