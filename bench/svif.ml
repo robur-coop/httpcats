@@ -40,9 +40,10 @@ let _json req _server () =
   let open Vif.Response.Syntax in
   let json =
     let open Jsont in
-    let message = "message", Meta.none
+    let message = ("message", Meta.none)
     and hello_world = String ("Hello, World!", Meta.none) in
-    Jsont.(Object ([message, hello_world], Meta.none)) in
+    Jsont.(Object ([ (message, hello_world) ], Meta.none))
+  in
   let field = "date" in
   let* () = Vif.Response.add ~field (date ()) in
   let* () = Vif.Response.with_json req Jsont.json json in
@@ -52,7 +53,8 @@ let _not_found req _target _server () =
   let process =
     let open Vif.Response.Syntax in
     let* () = Vif.Response.with_text req "m00." in
-    Vif.Response.respond `OK in
+    Vif.Response.respond `OK
+  in
   Some process
 
 let routes =
@@ -67,9 +69,10 @@ let () =
   let domains =
     match Sys.getenv_opt "DOMAINS" with
     | Some value -> int_of_string_opt value
-    | None -> None in
+    | None -> None
+  in
   Miou_unix.run ?domains @@ fun () ->
   let sockaddr = Unix.(ADDR_INET (inet_addr_loopback, 8080)) in
-  let handlers = [_not_found] in
+  let handlers = [ _not_found ] in
   let cfg = Vif.config ~backlog:4096 sockaddr in
   Vif.run ~cfg ~handlers routes ()

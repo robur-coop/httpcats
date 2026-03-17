@@ -1,14 +1,17 @@
 (executable
  (name smiou)
- (enabled_if (= %{profile} "bench"))
+ (enabled_if
+  (= %{profile} "bench"))
  (libraries yojson httpcats))
 
 (executable
  (name seio)
- (enabled_if (= %{profile} "bench"))
+ (enabled_if
+  (= %{profile} "bench"))
  (libraries httpun httpun-eio eio eio_main eio_linux yojson unix))
 
 (executable
  (name svif)
- (enabled_if (= %{profile} "bench"))
+ (enabled_if
+  (= %{profile} "bench"))
  (libraries vif))

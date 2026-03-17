@@ -1,5 +1,4 @@
 open Http_miou_unix
-module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
 
 let peer = Logs.Tag.def ~doc:"HTTPcats peer" "httpcats.peer" Fmt.string
 
@@ -23,11 +22,12 @@ module H2_Server_connection = struct
   let next_write_operation t =
     (next_write_operation t
       :> [ `Close of int
-         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Write of Bstr.t Faraday.iovec list
          | `Yield
          | `Upgrade ])
 end
 
+module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
 module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
 module C = Runtime.Make (TLS) (H2_Server_connection)
 
@@ -153,9 +153,8 @@ let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
     match Logs.Src.level src with
     | Some Logs.Debug ->
         let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
-        Logs.Tag.add peer
-          (Fmt.str "http:%a" pp_sockaddr sockaddr)
-          Logs.Tag.empty
+        let str = Fmt.str "http://%a" pp_sockaddr sockaddr in
+        Logs.Tag.add peer str Logs.Tag.empty
     | _ -> Logs.Tag.empty
   in
   Miou.await_exn (B.run conn ~tags ~read_buffer_size ?upgrade flow);
@@ -179,7 +178,21 @@ let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
   let conn =
     H1.Server_connection.create ~config ~error_handler request_handler
   in
-  Miou.await_exn (A.run conn ~read_buffer_size ?upgrade flow)
+  let finally flow = try Tls_miou_unix.close flow with _exn -> () in
+  let res = Miou.Ownership.create ~finally flow in
+  Miou.Ownership.own res;
+  let tags =
+    match Logs.Src.level src with
+    | Some Logs.Debug ->
+        let fd = Tls_miou_unix.file_descr flow in
+        let fd = Miou_unix.to_file_descr fd in
+        let sockaddr = Unix.getpeername fd in
+        let str = Fmt.str "https://%a" pp_sockaddr sockaddr in
+        Logs.Tag.add peer str Logs.Tag.empty
+    | _ -> Logs.Tag.empty
+  in
+  Miou.await_exn (A.run conn ~tags ~read_buffer_size ?upgrade flow);
+  Miou.Ownership.release res
 
 let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
     flow =
@@ -191,10 +204,24 @@ let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
     user's_error_handler `V2 ?request err respond
   in
   let request_handler reqd = user's_handler (`Tls flow) (`V2 reqd) in
+  let finally flow = try Tls_miou_unix.close flow with _exn -> () in
+  let res = Miou.Ownership.create ~finally flow in
+  Miou.Ownership.own res;
+  let tags =
+    match Logs.Src.level src with
+    | Some Logs.Debug ->
+        let fd = Tls_miou_unix.file_descr flow in
+        let fd = Miou_unix.to_file_descr fd in
+        let sockaddr = Unix.getpeername fd in
+        let str = Fmt.str "https://%a" pp_sockaddr sockaddr in
+        Logs.Tag.add peer str Logs.Tag.empty
+    | _ -> Logs.Tag.empty
+  in
   let conn =
     H2.Server_connection.create ~config ~error_handler request_handler
   in
-  Miou.await_exn (C.run conn ~read_buffer_size ?upgrade flow)
+  Miou.await_exn (C.run conn ~tags ~read_buffer_size ?upgrade flow);
+  Miou.Ownership.release res
 
 let rec clean_up orphans =
   match Miou.care orphans with
@@ -341,8 +368,10 @@ let with_tls ?(parallel = true) ?stop
                 Log.debug (fun m -> m "Start a http/1.1 request handler");
                 https_1_1_server_connection ~config ~user's_error_handler
                   ?upgrade ~user's_handler tls_flow
-            | `Both _, None -> assert false
-            | _, Some _protocol -> assert false
+            | `Both _, None ->
+                failwith "No protocol specified during ALPN negotiation"
+            | _, Some protocol ->
+                Fmt.failwith "Unrecognized protocol: %S" protocol
             end
           with exn ->
             Log.err (fun m ->
