@@ -153,9 +153,8 @@ let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
     match Logs.Src.level src with
     | Some Logs.Debug ->
         let sockaddr = Unix.getpeername (Miou_unix.to_file_descr flow) in
-        Logs.Tag.add peer
-          (Fmt.str "http:%a" pp_sockaddr sockaddr)
-          Logs.Tag.empty
+        let str = Fmt.str "http://%a" pp_sockaddr sockaddr in
+        Logs.Tag.add peer str Logs.Tag.empty
     | _ -> Logs.Tag.empty
   in
   Miou.await_exn (B.run conn ~tags ~read_buffer_size ?upgrade flow);
