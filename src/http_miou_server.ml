@@ -368,8 +368,10 @@ let with_tls ?(parallel = true) ?stop
                 Log.debug (fun m -> m "Start a http/1.1 request handler");
                 https_1_1_server_connection ~config ~user's_error_handler
                   ?upgrade ~user's_handler tls_flow
-            | `Both _, None -> assert false
-            | _, Some _protocol -> assert false
+            | `Both _, None ->
+                failwith "No protocol specified during ALPN negotiation"
+            | _, Some protocol ->
+                Fmt.failwith "Unrecognized protocol: %S" protocol
             end
           with exn ->
             Log.err (fun m ->
