@@ -1,3 +1,19 @@
+# v0.2.1 (2026-03-25) Paris - France
+
+- Use `Miou.Ownership` to release correctly our resource in any cases (including
+  the cancellation case) (@dinosaure, #47)
+- Replace `assert false` by `failwith` (@dinosaure, #47)
+- Improve performances (@dinosaure, #46)
+  We use a pre-allocated buffer to read/write things into the given flow now
+  We don't try to split bigarray to small strings
+  We fixed a bit the way to stop a server
+
+  A benchmark was made with `wrk` and compare `httpcats`, `httpun+eio`, `vif`
+  and `nginx`. It is available here: https://robur-coop.github.io/httpcats/
+  The protocol of the benchmark is described into our file `bench/PROTOCOL.md`.
+  The collected results from our machine is available into our file
+  `bench/BENCH.md`. Implementations are available into the `bench/` folder.
+
 # v0.2.0 (2026-02-19) Paris - France
 
 - Improve the OPAM file and the README.md (@geazi-anc, #39)
