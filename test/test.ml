@@ -242,7 +242,7 @@ let fold_http_1_1 ~finally ~f acc body =
   let acc = ref acc in
   let rec on_eof () = Body.Reader.close body; finally !acc
   and on_read bstr ~off ~len =
-    let str = Bigstringaf.substring bstr ~off ~len in
+    let str = Bstr.sub_string bstr ~off ~len in
     Logs.debug (fun m -> m "Feed the context");
     acc := f !acc str;
     Body.Reader.schedule_read body ~on_eof ~on_read
@@ -254,7 +254,7 @@ let fold_h2 ~finally ~f acc body =
   let acc = ref acc in
   let rec on_eof () = Body.Reader.close body; finally !acc
   and on_read bstr ~off ~len =
-    let str = Bigstringaf.substring bstr ~off ~len in
+    let str = Bstr.sub_string bstr ~off ~len in
     Logs.debug (fun m -> m "Feed the context");
     acc := f !acc str;
     Body.Reader.schedule_read body ~on_eof ~on_read

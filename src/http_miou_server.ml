@@ -401,7 +401,7 @@ module Websocket_connection = struct
 
   let next_write_operation t =
     (next_write_operation t
-      :> [ `Write of Bigstringaf.t Faraday.iovec list
+      :> [ `Write of Bstr.t Faraday.iovec list
          | `Close of int
          | `Yield
          | `Upgrade ])

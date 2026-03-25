@@ -14,7 +14,7 @@ module H1_Client_connection = struct
   let next_write_operation t =
     (next_write_operation t
       :> [ `Close of int
-         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Write of Bstr.t Faraday.iovec list
          | `Yield
          | `Upgrade ])
 end
@@ -28,7 +28,7 @@ module H2_Client_connection = struct
   let next_write_operation t =
     (next_write_operation t
       :> [ `Close of int
-         | `Write of Bigstringaf.t Faraday.iovec list
+         | `Write of Bstr.t Faraday.iovec list
          | `Yield
          | `Upgrade ])
 end
