@@ -140,7 +140,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     in
     try List.iter fn bstrs; `Ok len with
     | Closed_by_peer -> `Closed
-    | _exn -> Flow.close flow; `Closed
+    | _exn -> `Closed
 
   type t = {
       tags: Logs.Tag.set
