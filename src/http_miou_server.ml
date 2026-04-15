@@ -300,7 +300,7 @@ let socket_spec_to_fd backlog = function
       let fd =
         let open Unix in
         match sockaddr with
-        | ADDR_UNIX _ -> failwith "impossible to create a UNIX socket!"
+        | ADDR_UNIX _ -> Miou_unix.unix_socket ()
         | ADDR_INET (inet_addr, _) ->
             if is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
             else Miou_unix.tcpv4 ()
