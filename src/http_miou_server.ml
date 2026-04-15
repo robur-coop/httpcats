@@ -131,7 +131,7 @@ let default_error_handler version ?request:_ err respond =
 let pp_sockaddr ppf = function
   | Unix.ADDR_INET (inet_addr, port) ->
       Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
-  | Unix.ADDR_UNIX str -> Fmt.pf ppf "<%s>" str
+  | Unix.ADDR_UNIX str -> Fmt.pf ppf "<unix:%s>" str
 
 let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
     ~user's_handler flow =
