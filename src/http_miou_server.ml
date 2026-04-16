@@ -49,6 +49,16 @@ let pp_error ppf = function
   | `V2 `Bad_request -> Fmt.string ppf "Bad H2 request"
   | `Protocol msg -> Fmt.string ppf msg
 
+let pp_fd ppf miou_fd =
+  let fd' = Miou_unix.to_file_descr miou_fd in
+  let fd : int = Obj.magic fd' in
+  Fmt.pf ppf "%d" fd
+
+let pp_sockaddr ppf = function
+  | Unix.ADDR_INET (inet_addr, port) ->
+      Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
+  | Unix.ADDR_UNIX s -> Fmt.pf ppf "<unix:%s>" s
+
 let src = Logs.Src.create "http-miou-server"
 
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -127,11 +137,6 @@ let default_error_handler version ?request:_ err respond =
       in
       Log.debug (fun m -> m "flush the errored h2 response");
       H2.Body.Writer.flush body fn
-
-let pp_sockaddr ppf = function
-  | Unix.ADDR_INET (inet_addr, port) ->
-      Fmt.pf ppf "%s:%d" (Unix.string_of_inet_addr inet_addr) port
-  | Unix.ADDR_UNIX str -> Fmt.pf ppf "<unix:%s>" str
 
 let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
     ~user's_handler flow =
@@ -270,7 +275,7 @@ let accept_or_stop ?stop file_descr =
       else
         let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
         let stop = Miou.async (wait s) in
-        Log.debug (fun m -> m "waiting for a client");
+        Log.debug (fun m -> m "waiting for a client on fd %a" pp_fd file_descr);
         match Miou.await_first [ accept; stop ] with
         | Ok (fd, _sockaddr) when Atomic.get s.flag -> Miou_unix.close fd; None
         | Ok (fd, sockaddr) -> Some (fd, sockaddr)
@@ -333,7 +338,8 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         Log.debug (fun m ->
-            m "receive a connection from: %a" pp_sockaddr client'sockaddr);
+            m "receive a connection on fd %a from: %a" pp_fd fd' pp_sockaddr
+              client'sockaddr);
         call ~orphans begin fun () ->
             http_1_1_server_connection ~config ~user's_error_handler ?upgrade
               ~user's_handler fd'
