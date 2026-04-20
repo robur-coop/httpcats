@@ -295,20 +295,19 @@ let pp_sockaddr ppf = function
 let inhibit fn = try fn () with _exn -> ()
 
 let socket_spec_to_fd backlog = function
-  | Use (fd, sockaddr) -> fd, sockaddr
+  | Use (fd, sockaddr) -> (fd, sockaddr)
   | Bind sockaddr ->
-     let fd =
-       let open Unix in
-       match sockaddr with
-       | ADDR_UNIX _ ->
-          failwith "impossible to create a UNIX socket!"
-       | ADDR_INET (inet_addr, _) ->
-          if is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
-          else Miou_unix.tcpv4 ()
-     in
-     Log.debug (fun m -> m "binding fd %a to %a" pp_fd fd pp_sockaddr sockaddr);
-     Miou_unix.bind_and_listen ?backlog fd sockaddr;
-     fd, sockaddr
+      let fd =
+        let open Unix in
+        match sockaddr with
+        | ADDR_UNIX _ -> failwith "impossible to create a UNIX socket!"
+        | ADDR_INET (inet_addr, _) ->
+            if is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
+            else Miou_unix.tcpv4 ()
+      in
+      Log.debug (fun m -> m "binding fd %a to %a" pp_fd fd pp_sockaddr sockaddr);
+      Miou_unix.bind_and_listen ?backlog fd sockaddr;
+      (fd, sockaddr)
 
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
@@ -326,7 +325,8 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         Miou.yield ();
         go orphans file_descr server'sockaddr
     | None ->
-        Log.debug (fun m -> m "stop the server on %a" pp_sockaddr server'sockaddr);
+        Log.debug (fun m ->
+            m "stop the server on %a" pp_sockaddr server'sockaddr);
         Runtime.terminate orphans;
         Miou_unix.close file_descr
     | Some (fd', client'sockaddr) ->
@@ -371,10 +371,11 @@ let with_tls ?(parallel = true) ?stop
         Miou.yield ();
         go orphans file_descr server'sockaddr
     | None ->
-       Runtime.terminate orphans;
-       Miou_unix.close file_descr;
-       Log.debug (fun m -> m "Stopping service on fd %a, %a"
-         pp_fd file_descr pp_sockaddr server'sockaddr)
+        Runtime.terminate orphans;
+        Miou_unix.close file_descr;
+        Log.debug (fun m ->
+            m "Stopping service on fd %a, %a" pp_fd file_descr pp_sockaddr
+              server'sockaddr)
     | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
@@ -383,8 +384,9 @@ let with_tls ?(parallel = true) ?stop
             let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
             begin match (config, alpn tls_flow) with
             | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-               Log.debug (fun m -> m "Start a h2 request handler on fd %a for %a"
-                 pp_fd fd' pp_sockaddr client'sockaddr);
+                Log.debug (fun m ->
+                    m "Start a h2 request handler on fd %a for %a" pp_fd fd'
+                      pp_sockaddr client'sockaddr);
                 h2s_server_connection ~config:h2 ~user's_error_handler ?upgrade
                   ~user's_handler tls_flow
             | `Both (config, _), Some "http/1.1"
@@ -403,11 +405,13 @@ let with_tls ?(parallel = true) ?stop
                   (Printexc.to_string exn));
             Miou_unix.close fd'
         in
-        call ~orphans fn; go orphans file_descr server'sockaddr
+        call ~orphans fn;
+        go orphans file_descr server'sockaddr
   in
   let socket, server'sockaddr = socket_spec_to_fd backlog socket_spec in
-  Log.debug (fun m -> m "Starting service for fd %a, %a"
-                        pp_fd socket pp_sockaddr server'sockaddr);
+  Log.debug (fun m ->
+      m "Starting service for fd %a, %a" pp_fd socket pp_sockaddr
+        server'sockaddr);
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
   go (Miou.orphans ()) socket server'sockaddr
 
