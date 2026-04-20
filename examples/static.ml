@@ -105,7 +105,7 @@ let[@warning "-8"] handler ~root _
 
 let server (root, sockaddr) =
   let handler = handler ~root in
-  Httpcats.Server.clear ~handler sockaddr
+  Httpcats.Server.(clear ~handler (Bind sockaddr))
 
 let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
 

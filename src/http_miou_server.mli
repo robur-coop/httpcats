@@ -34,7 +34,8 @@ val switch : stop -> unit
 
 type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
 (** The type of connection used to communicate with the client — whether the
-    connection is secure ([`Tls]) or not ([`Tcp]). *)
+    connection is secure ([`Tls]) or not ([`Tcp]). Note that [`Tcp] connections
+    may in fact come from a UNIX-domain socket; the name is historical. *)
 
 type request = {
     meth: Method.t
@@ -92,7 +93,7 @@ type handler = flow -> reqd -> unit
         let stop = Httpcats.Server.stop () in
         let fn _sigint = Httpcats.Server.switch stop in
         ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle fn));
-        Httpcats.Server.clear ~stop ~handler sockaddr
+        Httpcats.Server.(clear ~stop ~handler (Bind sockaddr))
     ]}
 
     {2:ready Ready state of the server}
