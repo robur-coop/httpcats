@@ -326,14 +326,14 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         Miou.yield ();
         go orphans file_descr server'sockaddr
     | None ->
-        Log.debug (fun m -> m "stop the server");
+        Log.debug (fun m -> m "stop the server on %a" pp_sockaddr server'sockaddr);
         Runtime.terminate orphans;
         Miou_unix.close file_descr
-    | Some (fd', sockaddr) ->
+    | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         Log.debug (fun m ->
-            m "receive a connection from: %a" pp_sockaddr sockaddr);
+            m "receive a connection from: %a" pp_sockaddr client'sockaddr);
         call ~orphans begin fun () ->
             http_1_1_server_connection ~config ~user's_error_handler ?upgrade
               ~user's_handler fd'
@@ -383,7 +383,8 @@ let with_tls ?(parallel = true) ?stop
             let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
             begin match (config, alpn tls_flow) with
             | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-                Log.debug (fun m -> m "Start a h2 request handler");
+               Log.debug (fun m -> m "Start a h2 request handler on fd %a for %a"
+                 pp_fd fd' pp_sockaddr client'sockaddr);
                 h2s_server_connection ~config:h2 ~user's_error_handler ?upgrade
                   ~user's_handler tls_flow
             | `Both (config, _), Some "http/1.1"
