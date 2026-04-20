@@ -72,6 +72,11 @@ type response = Httpcats_core.Server.response = {
 
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
+
+type socket_spec =
+  | Use of Miou_unix.file_descr * Unix.sockaddr
+  | Bind of Unix.sockaddr
+
 type error_handler = Httpcats_core.Server.error_handler
 
 type handler =
@@ -277,6 +282,11 @@ let accept_or_stop ?stop file_descr =
             raise exn
     end
 
+let pp_fd ppf miou_fd =
+  let fd' = Miou_unix.to_file_descr miou_fd in
+  let fd : int = Obj.magic fd' in
+  Fmt.pf ppf "%d" fd
+
 let pp_sockaddr ppf = function
   | Unix.ADDR_UNIX str -> Fmt.pf ppf "<%s>" str
   | Unix.ADDR_INET (inet_addr, port) ->
@@ -284,21 +294,37 @@ let pp_sockaddr ppf = function
 
 let inhibit fn = try fn () with _exn -> ()
 
+let socket_spec_to_fd backlog = function
+  | Use (fd, sockaddr) -> fd, sockaddr
+  | Bind sockaddr ->
+     let fd =
+       let open Unix in
+       match sockaddr with
+       | ADDR_UNIX _ ->
+          failwith "impossible to create a UNIX socket!"
+       | ADDR_INET (inet_addr, _) ->
+          if is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
+          else Miou_unix.tcpv4 ()
+     in
+     Log.debug (fun m -> m "binding fd %a to %a" pp_fd fd pp_sockaddr sockaddr);
+     Miou_unix.bind_and_listen ?backlog fd sockaddr;
+     fd, sockaddr
+
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
-    ~handler:user's_handler sockaddr =
+    ~handler:user's_handler socket_spec =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
   in
-  let rec go orphans file_descr =
+  let rec go orphans file_descr server'sockaddr =
     clean_up orphans;
     match accept_or_stop ?stop file_descr with
     | exception Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE), _, _) ->
         Log.warn (fun m -> m "too many open files, backing off");
         Miou.yield ();
-        go orphans file_descr
+        go orphans file_descr server'sockaddr
     | None ->
         Log.debug (fun m -> m "stop the server");
         Runtime.terminate orphans;
@@ -312,18 +338,11 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
             http_1_1_server_connection ~config ~user's_error_handler ?upgrade
               ~user's_handler fd'
           end;
-        go orphans file_descr
+        go orphans file_descr server'sockaddr
   in
-  let socket =
-    match sockaddr with
-    | Unix.ADDR_UNIX _ -> invalid_arg "Impossible to create a Unix socket"
-    | Unix.ADDR_INET (inet_addr, _) ->
-        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
-        else Miou_unix.tcpv4 ()
-  in
-  Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  let socket, server'sockaddr = socket_spec_to_fd backlog socket_spec in
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
-  go (Miou.orphans ()) socket
+  go (Miou.orphans ()) socket server'sockaddr
 
 let alpn tls =
   match Tls_miou_unix.epoch tls with
@@ -338,21 +357,25 @@ let alpn tls =
 let with_tls ?(parallel = true) ?stop
     ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) tls_config
-    ?upgrade ~handler:user's_handler sockaddr =
+    ?upgrade ~handler:user's_handler socket_spec =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
   in
-  let rec go orphans file_descr =
+  let rec go orphans file_descr server'sockaddr =
     clean_up orphans;
     match accept_or_stop ?stop file_descr with
     | exception Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE), _, _) ->
         Log.warn (fun m -> m "too many open files, backing off");
         Miou.yield ();
-        go orphans file_descr
-    | None -> Runtime.terminate orphans; Miou_unix.close file_descr
-    | Some (fd', _sockaddr) ->
+        go orphans file_descr server'sockaddr
+    | None ->
+       Runtime.terminate orphans;
+       Miou_unix.close file_descr;
+       Log.debug (fun m -> m "Stopping service on fd %a, %a"
+         pp_fd file_descr pp_sockaddr server'sockaddr)
+    | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         let fn () =
@@ -379,18 +402,13 @@ let with_tls ?(parallel = true) ?stop
                   (Printexc.to_string exn));
             Miou_unix.close fd'
         in
-        call ~orphans fn; go orphans file_descr
+        call ~orphans fn; go orphans file_descr server'sockaddr
   in
-  let socket =
-    match sockaddr with
-    | Unix.ADDR_UNIX _ -> invalid_arg "Impossible to create a Unix socket"
-    | Unix.ADDR_INET (inet_addr, _) ->
-        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
-        else Miou_unix.tcpv4 ()
-  in
-  Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  let socket, server'sockaddr = socket_spec_to_fd backlog socket_spec in
+  Log.debug (fun m -> m "Starting service for fd %a, %a"
+                        pp_fd socket pp_sockaddr server'sockaddr);
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
-  go (Miou.orphans ()) socket
+  go (Miou.orphans ()) socket server'sockaddr
 
 module Websocket_connection = struct
   (* make it match Runtime.S signature *)
