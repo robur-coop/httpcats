@@ -53,12 +53,14 @@ type response = { status: Status.t; headers: Headers.t }
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 
-type socket_spec =
-  | Use of Miou_unix.file_descr * Unix.sockaddr
+type listen =
   | Bind of Unix.sockaddr
-      (** Controls whether or not [httpcats] binds its own socket or handles the
-          file descriptor it was handed. In the former case, the provided
-          {!Unix.sockaddr} is only used for logging. *)
+  | Use of Miou_unix.file_descr * Unix.sockaddr
+      (** Controls whether or not [httpcats] binds its own listening socket or
+          simply handles the file descriptor it was handed. In the latter case,
+          it is the responsibility of the caller to ensure the socket is bound
+          and listening, and the provided {!Unix.sockaddr} is only used for
+          logging. *)
 
 type error_handler =
   [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
@@ -144,7 +146,7 @@ val clear :
   -> ?error_handler:error_handler
   -> ?upgrade:(Miou_unix.file_descr -> unit)
   -> handler:handler
-  -> socket_spec
+  -> listen
   -> unit
 
 val with_tls :
@@ -160,7 +162,7 @@ val with_tls :
   -> Tls.Config.server
   -> ?upgrade:(Tls_miou_unix.t -> unit)
   -> handler:handler
-  -> socket_spec
+  -> listen
   -> unit
 
 module Websocket : sig
