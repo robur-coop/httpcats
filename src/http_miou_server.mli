@@ -34,7 +34,8 @@ val switch : stop -> unit
 
 type flow = [ `Tls of Tls_miou_unix.t | `Tcp of Miou_unix.file_descr ]
 (** The type of connection used to communicate with the client — whether the
-    connection is secure ([`Tls]) or not ([`Tcp]). *)
+    connection is secure ([`Tls]) or not ([`Tcp]). Note that [`Tcp] connections
+    may in fact come from a UNIX-domain socket; the name is historical. *)
 
 type request = {
     meth: Method.t
@@ -51,6 +52,15 @@ type response = { status: Status.t; headers: Headers.t }
 
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
+
+type listen =
+  | Bind of Unix.sockaddr
+  | Use of Miou_unix.file_descr * Unix.sockaddr
+      (** Controls whether or not [httpcats] binds its own listening socket or
+          simply handles the file descriptor it was handed. In the latter case,
+          it is the responsibility of the caller to ensure the socket is bound
+          and listening, and the provided {!Unix.sockaddr} is only used for
+          logging. *)
 
 type error_handler =
   [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
@@ -85,7 +95,7 @@ type handler = flow -> reqd -> unit
         let stop = Httpcats.Server.stop () in
         let fn _sigint = Httpcats.Server.switch stop in
         ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle fn));
-        Httpcats.Server.clear ~stop ~handler sockaddr
+        Httpcats.Server.(clear ~stop ~handler (Bind sockaddr))
     ]}
 
     {2:ready Ready state of the server}
@@ -136,7 +146,7 @@ val clear :
   -> ?error_handler:error_handler
   -> ?upgrade:(Miou_unix.file_descr -> unit)
   -> handler:handler
-  -> Unix.sockaddr
+  -> listen
   -> unit
 
 val with_tls :
@@ -152,7 +162,7 @@ val with_tls :
   -> Tls.Config.server
   -> ?upgrade:(Tls_miou_unix.t -> unit)
   -> handler:handler
-  -> Unix.sockaddr
+  -> listen
   -> unit
 
 module Websocket : sig

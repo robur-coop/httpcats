@@ -32,7 +32,8 @@ let server ?(port = 9451) handler =
     Miou.async @@ fun () ->
     let any = Unix.inet_addr_of_string "0.0.0.0" in
     let sockaddr = Unix.ADDR_INET (any, port) in
-    Httpcats.Server.clear ~stop ~handler sockaddr
+    let socket_spec = Httpcats.Server.Bind sockaddr in
+    Httpcats.Server.clear ~stop ~handler socket_spec
   in
   (stop, prm)
 
@@ -104,13 +105,14 @@ let secure_server ~seed ?(port = 8080) handler =
     Miou.async @@ fun () ->
     let any = Unix.inet_addr_of_string "0.0.0.0" in
     let sockaddr = Unix.ADDR_INET (any, port) in
+    let socket_spec = Httpcats.Server.Bind sockaddr in
     let cfg =
       Tls.Config.server
         ~certificates:(`Single ([ cert ], pk))
         ~alpn_protocols:[ "h2"; "http/1.1" ] ()
       |> Result.get_ok
     in
-    Httpcats.Server.with_tls ~stop cfg ~handler sockaddr
+    Httpcats.Server.with_tls ~stop cfg ~handler socket_spec
   in
   (stop, prm, authenticator)
 

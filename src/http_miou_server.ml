@@ -72,6 +72,11 @@ type response = Httpcats_core.Server.response = {
 
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
+
+type listen =
+  | Bind of Unix.sockaddr
+  | Use of Miou_unix.file_descr * Unix.sockaddr
+
 type error_handler = Httpcats_core.Server.error_handler
 
 type handler =
@@ -284,46 +289,56 @@ let pp_sockaddr ppf = function
 
 let inhibit fn = try fn () with _exn -> ()
 
+let listen_to_fd backlog = function
+  | Use (fd, sockaddr) -> (fd, sockaddr)
+  | Bind sockaddr ->
+      let fd =
+        let open Unix in
+        match sockaddr with
+        | ADDR_UNIX _ ->
+            failwith "UNIX sockets should be bound and passed in with Use"
+        | ADDR_INET (inet_addr, _) ->
+            if is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
+            else Miou_unix.tcpv4 ()
+      in
+      Log.debug (fun m -> m "binding %a" pp_sockaddr sockaddr);
+      Miou_unix.bind_and_listen ?backlog fd sockaddr;
+      (fd, sockaddr)
+
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
-    ~handler:user's_handler sockaddr =
+    ~handler:user's_handler listen =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
   in
-  let rec go orphans file_descr =
+  let rec go orphans file_descr server'sockaddr =
     clean_up orphans;
     match accept_or_stop ?stop file_descr with
     | exception Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE), _, _) ->
         Log.warn (fun m -> m "too many open files, backing off");
         Miou.yield ();
-        go orphans file_descr
+        go orphans file_descr server'sockaddr
     | None ->
-        Log.debug (fun m -> m "stop the server");
+        Log.debug (fun m ->
+            m "stop the server on %a" pp_sockaddr server'sockaddr);
         Runtime.terminate orphans;
         Miou_unix.close file_descr
-    | Some (fd', sockaddr) ->
+    | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         Log.debug (fun m ->
-            m "receive a connection from: %a" pp_sockaddr sockaddr);
+            m "receive a connection from: %a" pp_sockaddr client'sockaddr);
         call ~orphans begin fun () ->
             http_1_1_server_connection ~config ~user's_error_handler ?upgrade
               ~user's_handler fd'
           end;
-        go orphans file_descr
+        go orphans file_descr server'sockaddr
   in
-  let socket =
-    match sockaddr with
-    | Unix.ADDR_UNIX _ -> invalid_arg "Impossible to create a Unix socket"
-    | Unix.ADDR_INET (inet_addr, _) ->
-        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
-        else Miou_unix.tcpv4 ()
-  in
-  Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  let socket, server'sockaddr = listen_to_fd backlog listen in
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
-  go (Miou.orphans ()) socket
+  go (Miou.orphans ()) socket server'sockaddr
 
 let alpn tls =
   match Tls_miou_unix.epoch tls with
@@ -338,21 +353,25 @@ let alpn tls =
 let with_tls ?(parallel = true) ?stop
     ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) tls_config
-    ?upgrade ~handler:user's_handler sockaddr =
+    ?upgrade ~handler:user's_handler listen =
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
   in
-  let rec go orphans file_descr =
+  let rec go orphans file_descr server'sockaddr =
     clean_up orphans;
     match accept_or_stop ?stop file_descr with
     | exception Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE), _, _) ->
         Log.warn (fun m -> m "too many open files, backing off");
         Miou.yield ();
-        go orphans file_descr
-    | None -> Runtime.terminate orphans; Miou_unix.close file_descr
-    | Some (fd', _sockaddr) ->
+        go orphans file_descr server'sockaddr
+    | None ->
+        Runtime.terminate orphans;
+        Miou_unix.close file_descr;
+        Log.debug (fun m ->
+            m "Stopping service on %a" pp_sockaddr server'sockaddr)
+    | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
         let fn () =
@@ -360,7 +379,9 @@ let with_tls ?(parallel = true) ?stop
             let tls_flow = Tls_miou_unix.server_of_fd tls_config fd' in
             begin match (config, alpn tls_flow) with
             | `Both (_, h2), Some "h2" | `H2 h2, (Some "h2" | None) ->
-                Log.debug (fun m -> m "Start a h2 request handler");
+                Log.debug (fun m ->
+                    m "Start a h2 request handler for %a" pp_sockaddr
+                      client'sockaddr);
                 h2s_server_connection ~config:h2 ~user's_error_handler ?upgrade
                   ~user's_handler tls_flow
             | `Both (config, _), Some "http/1.1"
@@ -379,18 +400,14 @@ let with_tls ?(parallel = true) ?stop
                   (Printexc.to_string exn));
             Miou_unix.close fd'
         in
-        call ~orphans fn; go orphans file_descr
+        call ~orphans fn;
+        go orphans file_descr server'sockaddr
   in
-  let socket =
-    match sockaddr with
-    | Unix.ADDR_UNIX _ -> invalid_arg "Impossible to create a Unix socket"
-    | Unix.ADDR_INET (inet_addr, _) ->
-        if Unix.is_inet6_addr inet_addr then Miou_unix.tcpv6 ()
-        else Miou_unix.tcpv4 ()
-  in
-  Miou_unix.bind_and_listen ?backlog socket sockaddr;
+  let socket, server'sockaddr = listen_to_fd backlog listen in
+  Log.debug (fun m ->
+      m "Starting TLS service for %a" pp_sockaddr server'sockaddr);
   Option.iter (fun c -> ignore (Miou.Computation.try_return c ())) ready;
-  go (Miou.orphans ()) socket
+  go (Miou.orphans ()) socket server'sockaddr
 
 module Websocket_connection = struct
   (* make it match Runtime.S signature *)

@@ -133,7 +133,7 @@ let upgrade flow =
   Httpcats.Server.Websocket.upgrade ~fn (`Tcp flow)
 
 let server stop sockaddr =
-  Httpcats.Server.clear ~stop ~handler ~upgrade sockaddr
+  Httpcats.Server.clear ~stop ~handler ~upgrade (Httpcats.Server.Bind sockaddr)
 
 (*let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore*)
 
