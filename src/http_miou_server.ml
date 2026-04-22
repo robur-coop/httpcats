@@ -320,11 +320,13 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         Log.warn (fun m -> m "too many open files, backing off");
         Miou.yield ();
         go orphans file_descr server'sockaddr
-    | None ->
+    | None -> begin
         Log.debug (fun m ->
             m "stop the server on %a" pp_sockaddr server'sockaddr);
         Runtime.terminate orphans;
-        Miou_unix.close file_descr
+        try Miou_unix.close file_descr
+        with Unix.(Unix_error (EBADF, _, _)) -> ()
+      end
     | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
