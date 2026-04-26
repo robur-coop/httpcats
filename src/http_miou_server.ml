@@ -309,6 +309,7 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
     ~handler:user's_handler listen =
   let domains = Miou.Domain.available () in
+  let closed = Atomic.make false in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
@@ -324,8 +325,8 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         Log.debug (fun m ->
             m "stop the server on %a" pp_sockaddr server'sockaddr);
         Runtime.terminate orphans;
-        try Miou_unix.close file_descr
-        with Unix.(Unix_error (EBADF, _, _)) -> ()
+        if Atomic.compare_and_set closed false true then
+          Miou_unix.close file_descr
       end
     | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
