@@ -286,7 +286,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           Log.debug (fun m -> m ~tags "Connection closed");
           let _ = Miou.Computation.try_cancel u_rd (Miou.Cancelled, empty_bt) in
           let _ = Miou.Computation.try_cancel u_wr (Miou.Cancelled, empty_bt) in
-          ()
+          if !s_rd = false || !s_wr = false then shutdown flow `read_write
         end
       in
       let orphans = Miou.orphans () in
