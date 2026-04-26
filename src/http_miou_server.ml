@@ -357,6 +357,7 @@ let with_tls ?(parallel = true) ?stop
     ?(config = `Both (H1.Config.default, H2.Config.default)) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) tls_config
     ?upgrade ~handler:user's_handler listen =
+  let closed = Atomic.make false in
   let domains = Miou.Domain.available () in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
@@ -370,10 +371,11 @@ let with_tls ?(parallel = true) ?stop
         Miou.yield ();
         go orphans file_descr server'sockaddr
     | None ->
-        Runtime.terminate orphans;
-        Miou_unix.close file_descr;
         Log.debug (fun m ->
-            m "Stopping service on %a" pp_sockaddr server'sockaddr)
+            m "Stopping service on %a" pp_sockaddr server'sockaddr);
+        Runtime.terminate orphans;
+        if Atomic.compare_and_set closed false true then
+          Miou_unix.close file_descr
     | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);
