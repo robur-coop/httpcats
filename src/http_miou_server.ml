@@ -10,7 +10,7 @@ module TCP_and_H1 = struct
      as soon as the process has finished, we close the socket.
 
      See [http_1_1_server_connection] for the [Unix.close]. *)
-  let shutdown flow = function `read -> () | value -> shutdown flow value
+  let shutdown flow = function `read | `read_write -> () | value -> shutdown flow value
 end
 
 module H2_Server_connection = struct
