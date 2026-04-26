@@ -1,4 +1,5 @@
 let anchor = Unix.gettimeofday ()
+let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
 let reporter ppf =
   let report src level ~over k msgf =
@@ -38,8 +39,6 @@ let server ?(port = 9451) handler =
   (stop, prm)
 
 module Ca = struct
-  open Rresult
-
   let prefix =
     X509.Distinguished_name.
       [ Relative_distinguished_name.singleton (CN "HTTPcats") ]
@@ -55,8 +54,9 @@ module Ca = struct
   let _10s = Ptime.Span.of_int_s 10
 
   let make domain_name seed =
-    Domain_name.of_string domain_name >>= Domain_name.host
-    >>= fun domain_name ->
+    let ( let* ) = Result.bind in
+    let* domain_name = Domain_name.of_string domain_name in
+    let* domain_name = Domain_name.host domain_name in
     let private_key =
       let seed = Base64.decode_exn ~pad:false seed in
       let g = Mirage_crypto_rng.(create ~seed (module Fortuna)) in
@@ -65,10 +65,11 @@ module Ca = struct
     let valid_from =
       Option.get Ptime.(sub_span (v (Ptime_clock.now_d_ps ())) _10s)
     in
-    Ptime.add_span valid_from cacert_lifetime
-    |> Option.to_result ~none:(R.msgf "End time out of range")
-    >>= fun valid_until ->
-    X509.Signing_request.create cacert_dn (`RSA private_key) >>= fun ca_csr ->
+    let* valid_until =
+      Ptime.add_span valid_from cacert_lifetime
+      |> Option.to_result ~none:(msgf "End time out of range")
+    in
+    let* ca_csr = X509.Signing_request.create cacert_dn (`RSA private_key) in
     let extensions =
       let open X509.Extension in
       let key_id =
@@ -84,10 +85,11 @@ module Ca = struct
            (true, [ `Digital_signature; `Content_commitment; `Key_encipherment ])
       |> add Subject_key_id (false, key_id)
     in
-    X509.Signing_request.sign ~valid_from ~valid_until ~extensions ca_csr
-      (`RSA private_key) cacert_dn
-    |> R.reword_error (R.msgf "%a" X509.Validation.pp_signature_error)
-    >>= fun certificate ->
+    let* certificate =
+      X509.Signing_request.sign ~valid_from ~valid_until ~extensions ca_csr
+        (`RSA private_key) cacert_dn
+      |> Result.map_error (msgf "%a" X509.Validation.pp_signature_error)
+    in
     let fingerprint = X509.Certificate.fingerprint `SHA256 certificate in
     let time () = Some (Ptime_clock.now ()) in
     let authenticator =
@@ -99,7 +101,9 @@ end
 let secure_server ~seed ?(port = 8080) handler =
   let stop = Httpcats.Server.stop () in
   let cert, pk, authenticator =
-    Rresult.R.failwith_error_msg (Ca.make "localhost" seed)
+    match Ca.make "localhost" seed with
+    | Ok value -> value
+    | Error (`Msg msg) -> failwith msg
   in
   let prm =
     Miou.async @@ fun () ->
@@ -321,7 +325,6 @@ let ( % ) f g x = f (g x)
 
 let test03 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
-  let open Rresult in
   let ( let* ) = Result.bind in
   Miou_unix.run ~domains @@ fun () ->
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
@@ -365,7 +368,7 @@ let test03 =
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    |> Result.map_error (msgf "%a" Httpcats.pp_error)
   in
   let h2 =
     Miou.async @@ fun () ->
@@ -374,14 +377,14 @@ let test03 =
         ~fn:(fun _ _req _resp buf -> function
           | Some str -> Buffer.add_string buf str; buf | None -> buf)
         ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
-      |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+      |> Result.map_error (msgf "%a" Httpcats.pp_error)
     in
     Logs.debug (fun m -> m "End of h2 request");
     Ok res
   in
   match
     Miou.await_all [ http_1_1; h2 ]
-    |> List.map (R.reword_error (R.msgf "%s" % Printexc.to_string))
+    |> List.map (Result.map_error (msgf "%s" % Printexc.to_string))
     |> List.map Result.join
   with
   | [ Ok (_, buf0); Ok (_, buf1) ] ->
@@ -399,7 +402,6 @@ let test03 =
       Alcotest.failf "Unexpected result"
 
 let test04 =
-  let open Rresult in
   Alcotest.test_case "stream" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
@@ -465,7 +467,7 @@ let test04 =
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:9451" (Buffer.create 0x1000)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    |> Result.map_error (msgf "%a" Httpcats.pp_error)
   in
   let h2 =
     Miou.async @@ fun () ->
@@ -473,11 +475,11 @@ let test04 =
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    |> Result.map_error (msgf "%a" Httpcats.pp_error)
   in
   match
     Miou.await_all [ h2; http_1_1 ]
-    |> List.map (R.reword_error (R.msgf "%s" % Printexc.to_string))
+    |> List.map (Result.map_error (msgf "%s" % Printexc.to_string))
     |> List.map Result.join
   with
   | [ Ok (_, buf0); Ok (_, buf1) ] ->
@@ -499,7 +501,6 @@ let test04 =
       Alcotest.failf "Unexpected result"
 
 let test05 =
-  let open Rresult in
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
@@ -553,7 +554,7 @@ let test05 =
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:9451" (Buffer.create 0x1000)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    |> Result.map_error (msgf "%a" Httpcats.pp_error)
   in
   let h2 =
     Miou.async @@ fun () ->
@@ -562,11 +563,11 @@ let test05 =
       ~fn:(fun _ _req _resp buf -> function
         | Some str -> Buffer.add_string buf str; buf | None -> buf)
       ~uri:"https://127.0.0.1:9451" (Buffer.create 0x1000)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    |> Result.map_error (msgf "%a" Httpcats.pp_error)
   in
   match
     Miou.await_all [ h2; http_1_1 ]
-    |> List.map (R.reword_error (R.msgf "%s" % Printexc.to_string))
+    |> List.map (Result.map_error (msgf "%s" % Printexc.to_string))
     |> List.map Result.join
   with
   | [ Ok (_, buf0); Ok (_, buf1) ] ->
@@ -585,7 +586,6 @@ let test05 =
       Alcotest.failf "Unexpected result"
 
 let test06 =
-  let open Rresult in
   Alcotest.test_case "error with h2" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
@@ -619,7 +619,7 @@ let test06 =
         ; ("connection", "close")
         ]
       ~uri:"https://127.0.0.1:9451" (Buffer.create 0x10)
-    |> R.reword_error (R.msgf "%a" Httpcats.pp_error)
+    |> Result.map_error (msgf "%a" Httpcats.pp_error)
   in
   match Miou.await request with
   | Error exn ->
