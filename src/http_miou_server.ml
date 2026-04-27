@@ -5,12 +5,35 @@ let peer = Logs.Tag.def ~doc:"HTTPcats peer" "httpcats.peer" Fmt.string
 module TCP_and_H1 = struct
   include TCP
 
-  (* NOTE(dinosaure): an early [shutdown `read] is not really appreciated by
-     http/1.1 servers. We do nothing in this case. However, we do make sure that
-     as soon as the process has finished, we close the socket.
+  (* NOTE(dinosaure): for HTTP/1.1 server, both [`read] and [`read_write]
+     are inhibited:
 
-     See [http_1_1_server_connection] for the [Unix.close]. *)
-  let shutdown flow = function `read -> () | value -> shutdown flow value
+     - [`read]: an early SHUT_RD is not appreciated (Linux RST when bytes
+       arrive on a half-closed read side, racing response delivery during
+       pipelining).
+
+     - [`read_write]: the [runner] calls it on exit when one half-close did
+       not flow naturally (typically [wr_stop] still false because the writer
+       task is queued but not yet drained). For HTTP/1.1 server this happens
+       on the keep-alive close path: [read_eof] sets [Reader.is_closed],
+       [_next_read_operation] calls [shutdown_writer] which immediately
+       flips [Runtime.is_closed conn] to true while the writer task is only
+       enqueued. The runtime's terminal shutdown would then close the fd
+       under the writer's [Flow.write], truncating any in-flight response and
+       producing [EBADF] on the writer's [shutdown `write]. The deadlock the
+       runner-exit shutdown is designed to break (reader stuck in
+       [Flow.read] while the state-machine has decided to close from
+       outside) does not happen for HTTP/1.1 server: every path that calls
+       [shutdown_reader] runs from inside the reader task itself.
+
+     - [`write] passes through: SHUT_WR is the orderly FIN signaling the
+       end of the response.
+
+     The actual [Unix.close] of the fd is performed by the
+     [Miou.Ownership] finalizer in [http_1_1_server_connection]. *)
+  let shutdown flow = function
+    | `read | `read_write -> ()
+    | `write as cmd -> shutdown flow cmd
 end
 
 module H2_Server_connection = struct
