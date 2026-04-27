@@ -86,12 +86,12 @@ let resolve_location ~uri ~location =
   match String.split_on_char '/' location with
   | "http:" :: "" :: _ -> Ok location
   | "https:" :: "" :: _ -> Ok location
-  | "" :: "" :: _ -> begin
-      match String.split_on_char '/' uri with
+  | "" :: "" :: _ ->
+      begin match String.split_on_char '/' uri with
       | schema :: "" :: user_pass_host_port :: _ ->
           Ok (String.concat "/" [ schema; ""; user_pass_host_port ^ location ])
       | _ -> error_msgf "Expected an absolute uri, got: %S" uri
-    end
+      end
   | _ -> error_msgf "Unknown location (relative path): %S" location
 
 let add_authentication ?(meth = `Basic) ~add headers user_pass =
@@ -307,13 +307,13 @@ let h2_writer body seq () =
   let rec next seq reason =
     match reason with
     | `Closed -> H2.Body.Writer.close body
-    | `Written -> begin
-        match Seq.uncons seq with
+    | `Written ->
+        begin match Seq.uncons seq with
         | None -> H2.Body.Writer.close body
         | Some (str, seq) ->
             H2.Body.Writer.write_string body str;
             H2.Body.Writer.flush body (fun reason -> next seq reason)
-      end
+        end
   in
   next seq `Written
 

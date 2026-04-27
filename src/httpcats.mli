@@ -431,21 +431,19 @@ val stream : string Seq.t -> body
     Here is a practical example of how to obtain the response and its content:
 
     {[
-      let fn _meta _req _resp buf chunk =
-        match chunk with
-        | Some str ->
-            Buffer.add_string buf str;
-            buf
-        | None -> buf
-      in
-      let buf = Buffer.create 0x100 in
-      let uri = "http://foo.bar" in
-      let result = Httpcats.request ~follow_redirect:false ~fn ~uri buf in
-      match result with
-      | Ok (response, buf) ->
-          let contents = Buffer.contents buf in
-          Ok (response, contents)
-      | Error _ as err -> err
+    let fn _meta _req _resp buf chunk =
+      match chunk with
+      | Some str -> Buffer.add_string buf str; buf
+      | None -> buf
+    in
+    let buf = Buffer.create 0x100 in
+    let uri = "http://foo.bar" in
+    let result = Httpcats.request ~follow_redirect:false ~fn ~uri buf in
+    match result with
+    | Ok (response, buf) ->
+        let contents = Buffer.contents buf in
+        Ok (response, contents)
+    | Error _ as err -> err
     ]}
 
     The [fn] function has several arguments, such as:
@@ -469,27 +467,27 @@ val stream : string Seq.t -> body
     form of a list in the case of one or more redirects:
 
     {[
-      let fn _meta _req resp state chunk =
-        match (state, chunk) with
-        | `Body (_, []) -> assert false
-        | `Body (chunks, resp :: resps), None ->
-            let contents = String.concat "" (List.rev chunks) in
-            let resp = (resp, contents) in
-            `Responses (resp :: resps)
-        | `Body (chunks, resps), Some str -> `Body (str :: chunks, resps)
-        | `Responses resps, Some str ->
-            let resps = (resp, "") :: resps in
-            `Body ([ str ], resps)
-        | `Responses resps, None ->
-            let resps = (resp, "") :: resps in
-            `Response resps
-      in
-      let uri = "http://foo.bar" in
-      let result = Httpcats.request ~fn ~uri (`Response []) in
-      match result with
-      | Ok (_, `Responses resps) -> Ok resps
-      | Ok (_, `Body _) -> assert false
-      | Error _ as err -> err
+    let fn _meta _req resp state chunk =
+      match (state, chunk) with
+      | `Body (_, []) -> assert false
+      | `Body (chunks, resp :: resps), None ->
+          let contents = String.concat "" (List.rev chunks) in
+          let resp = (resp, contents) in
+          `Responses (resp :: resps)
+      | `Body (chunks, resps), Some str -> `Body (str :: chunks, resps)
+      | `Responses resps, Some str ->
+          let resps = (resp, "") :: resps in
+          `Body ([ str ], resps)
+      | `Responses resps, None ->
+          let resps = (resp, "") :: resps in
+          `Response resps
+    in
+    let uri = "http://foo.bar" in
+    let result = Httpcats.request ~fn ~uri (`Response []) in
+    match result with
+    | Ok (_, `Responses resps) -> Ok resps
+    | Ok (_, `Body _) -> assert false
+    | Error _ as err -> err
     ]}
 
     It is also possible to simply filter the responses and only process the

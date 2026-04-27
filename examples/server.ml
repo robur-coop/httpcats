@@ -65,19 +65,19 @@ let port_of_string str =
 
 let sockaddr_of_arguments () =
   match Sys.argv with
-  | [| _; address; port |] -> begin
-      match (inet_addr_of_string address, port_of_string port) with
+  | [| _; address; port |] ->
+      begin match (inet_addr_of_string address, port_of_string port) with
       | Ok inet_addr, Ok port -> Unix.ADDR_INET (inet_addr, port)
       | Error msg, _ | _, Error msg -> failwith msg
-    end
-  | [| _; address_or_port |] -> begin
-      match
+      end
+  | [| _; address_or_port |] ->
+      begin match
         (inet_addr_of_string address_or_port, port_of_string address_or_port)
       with
       | Ok inet_addr, _ -> Unix.ADDR_INET (inet_addr, 8080)
       | _, Ok port -> Unix.ADDR_INET (Unix.inet_addr_loopback, port)
       | Error msg, _ -> failwith msg
-    end
+      end
   | [| _ |] -> Unix.ADDR_INET (Unix.inet_addr_loopback, 8080)
   | _ ->
       Format.eprintf "%s [<address>] [<port>]\n%!" Sys.executable_name;

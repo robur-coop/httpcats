@@ -86,15 +86,15 @@ let rec terminate orphans =
 let rec clean orphans =
   match Miou.care orphans with
   | None | Some None -> ()
-  | Some (Some prm) -> begin
-      match Miou.await prm with
+  | Some (Some prm) ->
+      begin match Miou.await prm with
       | Ok () -> clean orphans
       | Error exn ->
           Log.err (fun m ->
               m "unexpected exception from an asynchronous task: %S"
                 (Printexc.to_string exn));
           clean orphans
-    end
+      end
 
 exception Closed_by_peer = Flow.Closed_by_peer
 
@@ -219,24 +219,24 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     | Some None ->
         Miou.yield ();
         terminate tags error conn orphans
-    | Some (Some prm) -> begin
-        match Miou.await prm with
+    | Some (Some prm) ->
+        begin match Miou.await prm with
         | Ok () -> terminate tags error conn orphans
         | Error exn ->
             report_exn tags error conn exn;
             terminate tags error conn orphans
-      end
+        end
 
   let rec clean tags error conn orphans =
     match Miou.care orphans with
     | Some None | None -> ()
-    | Some (Some prm) -> begin
-        match Miou.await prm with
+    | Some (Some prm) ->
+        begin match Miou.await prm with
         | Ok () -> clean tags error conn orphans
         | Error exn ->
             report_exn tags error conn exn;
             clean tags error conn orphans
-      end
+        end
 
   (* NOTE(dinosaure): [Runtime] design is a "runner" process that is awaiting
      tasks. At the very beginning, we launch 2 tasks (one for reading and one
