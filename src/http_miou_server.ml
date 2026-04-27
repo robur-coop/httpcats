@@ -265,8 +265,8 @@ let switch { mutex; condition; flag } =
 let accept_or_stop ?stop file_descr =
   match stop with
   | None -> Some (Miou_unix.accept file_descr)
-  | Some s -> begin
-      if Atomic.get s.flag then None
+  | Some s ->
+      begin if Atomic.get s.flag then None
       else
         let accept = Miou.async @@ fun () -> Miou_unix.accept file_descr in
         let stop = Miou.async (wait s) in
@@ -280,7 +280,7 @@ let accept_or_stop ?stop file_descr =
             Log.err (fun m ->
                 m "unexpected exception: %S" (Printexc.to_string exn));
             raise exn
-    end
+      end
 
 let pp_sockaddr ppf = function
   | Unix.ADDR_UNIX str -> Fmt.pf ppf "<%s>" str

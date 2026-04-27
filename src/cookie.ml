@@ -723,12 +723,12 @@ let parse_parameter str =
   | [ "expires"; str ] ->
       let* v = parse_rfc822_date str in
       Some (Expires v)
-  | [ "max-age"; n ] -> begin
-      try
+  | [ "max-age"; n ] ->
+      begin try
         let n = int_of_string n in
         Some (MaxAge n)
       with _ -> None
-    end
+      end
   | _ -> None
 
 let parse str =

@@ -19,16 +19,16 @@ let default_root = Fpath.(to_dir_path (v (Unix.getcwd ())))
 
 let arguments () =
   match Sys.argv with
-  | [| _; address; port; root |] -> begin
-      match
+  | [| _; address; port; root |] ->
+      begin match
         (inet_addr_of_string address, port_of_string port, root_of_string root)
       with
       | Ok inet_addr, Ok port, Ok root ->
           (Unix.ADDR_INET (inet_addr, port), root)
       | Error msg, _, _ | _, Error msg, _ | _, _, Error msg -> failwith msg
-    end
-  | [| _; address_or_port_or_root |] -> begin
-      match
+      end
+  | [| _; address_or_port_or_root |] ->
+      begin match
         ( inet_addr_of_string address_or_port_or_root
         , port_of_string address_or_port_or_root
         , root_of_string address_or_port_or_root )
@@ -38,7 +38,7 @@ let arguments () =
           (Unix.ADDR_INET (Unix.inet_addr_loopback, port), default_root)
       | _, _, Ok root -> (Unix.ADDR_INET (Unix.inet_addr_loopback, 8080), root)
       | Error msg, _, _ -> failwith msg
-    end
+      end
   | [| _ |] -> (Unix.ADDR_INET (Unix.inet_addr_loopback, 8080), default_root)
   | _ ->
       Format.eprintf "%s [<address>] [<port>] [root]\n%!" Sys.executable_name;

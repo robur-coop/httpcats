@@ -91,12 +91,12 @@ type handler = flow -> reqd -> unit
     [SIGINT] signal ([^C]):
 
     {[
-      let () =
-        Miou_unix.run @@ fun () ->
-        let stop = Httpcats.Server.stop () in
-        let fn _sigint = Httpcats.Server.switch stop in
-        ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle fn));
-        Httpcats.Server.(clear ~stop ~handler (Bind sockaddr))
+    let () =
+      Miou_unix.run @@ fun () ->
+      let stop = Httpcats.Server.stop () in
+      let fn _sigint = Httpcats.Server.switch stop in
+      ignore (Miou.sys_signal Sys.sigint (Sys.Signal_handle fn));
+      Httpcats.Server.(clear ~stop ~handler (Bind sockaddr))
     ]}
 
     {2:ready Ready state of the server}
