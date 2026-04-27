@@ -305,11 +305,12 @@ let listen_to_fd backlog = function
       Miou_unix.bind_and_listen ?backlog fd sockaddr;
       (fd, sockaddr)
 
+let we_bound = function Use _ -> false | Bind _ -> true
+
 let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
     ?error_handler:(user's_error_handler = default_error_handler) ?upgrade
     ~handler:user's_handler listen =
   let domains = Miou.Domain.available () in
-  let closed = Atomic.make false in
   let call ~orphans fn =
     if parallel && domains >= 2 then ignore (Miou.call ~orphans fn)
     else ignore (Miou.async ~orphans fn)
@@ -325,8 +326,7 @@ let clear ?(parallel = true) ?stop ?(config = H1.Config.default) ?backlog ?ready
         Log.debug (fun m ->
             m "stop the server on %a" pp_sockaddr server'sockaddr);
         Runtime.terminate orphans;
-        if Atomic.compare_and_set closed false true then
-          Miou_unix.close file_descr
+        if we_bound listen then Miou_unix.close file_descr
       end
     | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
@@ -370,10 +370,10 @@ let with_tls ?(parallel = true) ?stop
         Miou.yield ();
         go orphans file_descr server'sockaddr
     | None ->
-        Runtime.terminate orphans;
-        Miou_unix.close file_descr;
         Log.debug (fun m ->
-            m "Stopping service on %a" pp_sockaddr server'sockaddr)
+            m "Stopping service on %a" pp_sockaddr server'sockaddr);
+        Runtime.terminate orphans;
+        if we_bound listen then Miou_unix.close file_descr
     | Some (fd', client'sockaddr) ->
         let socket = Miou_unix.to_file_descr fd' in
         inhibit (fun () -> Unix.setsockopt socket Unix.TCP_NODELAY true);

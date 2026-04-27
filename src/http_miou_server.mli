@@ -58,9 +58,10 @@ type listen =
   | Use of Miou_unix.file_descr * Unix.sockaddr
       (** Controls whether or not [httpcats] binds its own listening socket or
           simply handles the file descriptor it was handed. In the latter case,
-          it is the responsibility of the caller to ensure the socket is bound
-          and listening, and the provided {!Unix.sockaddr} is only used for
-          logging. *)
+          the provided {!Unix.sockaddr} is only used for logging, and it is the
+          responsibility of the caller to manage the state of the file
+          descriptor. It must be ready for {!Miou_unix.accept} when passed in,
+          and closed with {!Miou_unix.close} after the server terminates. *)
 
 type error_handler =
   [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
