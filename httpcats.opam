@@ -30,3 +30,6 @@ build: [
 ]
 synopsis: "A simple HTTP client / server using h1, h2, and miou"
 available: [ arch != "x86_32" ]
+pin-depends: [
+  [ "miou.dev" "git+https://github.com/robur-coop/miou.git#c639c4dbe594d2092ec4c80786b8d5ea486b600f" ]
+]

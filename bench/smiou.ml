@@ -79,7 +79,7 @@ let localhost_8080 = Unix.(ADDR_INET (inet_addr_any, 8080))
 
 let server stop =
   Httpcats.Server.clear ~parallel:false ~stop ~backlog:4096 ~handler
-    localhost_8080
+    (Httpcats.Server.Bind localhost_8080)
 
 let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
 

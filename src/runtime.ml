@@ -148,8 +148,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     ; flow: Flow.t
     ; tasks: (unit -> unit) Queue.t
     ; buffer: Buffer.t
-    ; read_buf: bytes
-    ; write_buf: bytes
+    ; tmp: bytes
     ; stop: bool ref
     ; upgrade: unit Miou.Computation.t
     ; lock: Miou.Mutex.t
@@ -161,7 +160,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
       match Runtime.next_read_operation t.conn with
       | `Read ->
           let fn =
-            match recv t.flow t.read_buf t.buffer with
+            match recv t.flow t.tmp t.buffer with
             | `Eof -> Runtime.read_eof t.conn
             | `Ok _len -> Runtime.read t.conn
           in
@@ -187,7 +186,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let rec protected () =
       match Runtime.next_write_operation t.conn with
       | `Write iovecs ->
-          writev t.flow t.write_buf iovecs |> Runtime.report_write_result t.conn;
+          writev t.flow t.tmp iovecs |> Runtime.report_write_result t.conn;
           protected ()
       | `Yield ->
           let k () =
@@ -205,37 +204,44 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     and go () = Fun.protect ~finally protected in
     go
 
+  type g = {
+      tags: Logs.Tag.set
+    ; conn: Runtime.t
+    ; flow: Flow.t
+    ; tasks: (unit -> unit) Queue.t
+    ; buffer: Buffer.t
+    ; rd_buf: bytes
+    ; wr_buf: bytes
+    ; rd_stop: bool ref
+    ; wr_stop: bool ref
+    ; errored: bool ref
+    ; rd_resolver: unit Miou.Computation.t
+    ; wr_resolver: unit Miou.Computation.t
+    ; lock: Miou.Mutex.t
+    ; cond: Miou.Condition.t
+  }
+
   (* NOTE(dinosaure): report exception only once. *)
-  let report_exn tags error conn exn =
-    Log.err (fun m -> m ~tags "user's exception: %s" (Printexc.to_string exn));
-    if !error = false then begin
-      Runtime.report_exn conn exn;
-      error := true
+  let report_exn g exn =
+    Log.err (fun m ->
+        m ~tags:g.tags "user's exception: %s" (Printexc.to_string exn));
+    if !(g.errored) = false then begin
+      Runtime.report_exn g.conn exn;
+      g.errored := true
     end
 
-  let rec terminate tags error conn orphans =
-    match Miou.care orphans with
-    | None -> ()
-    | Some None ->
-        Miou.yield ();
-        terminate tags error conn orphans
-    | Some (Some prm) ->
-        begin match Miou.await prm with
-        | Ok () -> terminate tags error conn orphans
-        | Error exn ->
-            report_exn tags error conn exn;
-            terminate tags error conn orphans
-        end
+  let drain orphans =
+    let seq = Seq.of_dispenser @@ fun () -> Miou.take orphans in
+    let lst = List.of_seq seq in
+    List.iter Miou.cancel lst
 
-  let rec clean tags error conn orphans =
+  let rec clean g orphans =
     match Miou.care orphans with
     | Some None | None -> ()
     | Some (Some prm) ->
         begin match Miou.await prm with
-        | Ok () -> clean tags error conn orphans
-        | Error exn ->
-            report_exn tags error conn exn;
-            clean tags error conn orphans
+        | Ok () -> clean g orphans
+        | Error exn -> report_exn g exn; clean g orphans
         end
 
   (* NOTE(dinosaure): [Runtime] design is a "runner" process that is awaiting
@@ -257,45 +263,118 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
      writing). These are not currently used but may be complementary in
      determining the shutdown of [runner]. *)
 
-  let run conn ?(tags = Logs.Tag.empty) ?(read_buffer_size = _minor) ?upgrade
-      flow =
+  let to_reader g =
+    {
+      tags= g.tags
+    ; conn= g.conn
+    ; flow= g.flow
+    ; tasks= g.tasks
+    ; buffer= g.buffer
+    ; tmp= g.rd_buf
+    ; stop= g.rd_stop
+    ; upgrade= g.rd_resolver
+    ; lock= g.lock
+    ; cond= g.cond
+    }
+
+  let to_writer g =
+    {
+      tags= g.tags
+    ; conn= g.conn
+    ; flow= g.flow
+    ; tasks= g.tasks
+    ; buffer= g.buffer
+    ; tmp= g.wr_buf
+    ; stop= g.wr_stop
+    ; upgrade= g.wr_resolver
+    ; lock= g.lock
+    ; cond= g.cond
+    }
+
+  let global ~read_buffer_size ~tags conn flow =
     let buffer = Buffer.create read_buffer_size in
-    let read_buf = Bytes.create _minor in
-    let write_buf = Bytes.create _minor in
-    let s_rd = ref false and s_wr = ref false and error = ref false in
-    let u_rd = Miou.Computation.create () in
-    let u_wr = Miou.Computation.create () in
+    let rd_buf = Bytes.create _minor in
+    let wr_buf = Bytes.create _minor in
+    let rd_stop = ref false in
+    let wr_stop = ref false in
+    let errored = ref false in
+    let rd_resolver = Miou.Computation.create () in
+    let wr_resolver = Miou.Computation.create () in
     let tasks = Queue.create () in
     let lock = Miou.Mutex.create () in
     let cond = Miou.Condition.create () in
-    let is_shutdown conn = Runtime.is_closed conn || (!s_rd && !s_wr) in
+    {
+      tags
+    ; conn
+    ; flow
+    ; tasks
+    ; buffer
+    ; rd_buf
+    ; wr_buf
+    ; rd_stop
+    ; wr_stop
+    ; errored
+    ; rd_resolver
+    ; wr_resolver
+    ; lock
+    ; cond
+    }
+
+  let run conn ?(tags = Logs.Tag.empty) ?(read_buffer_size = _minor) ?upgrade
+      flow =
+    let g = global ~read_buffer_size ~tags conn flow in
+    let is_shutdown conn =
+      Runtime.is_closed conn || (!(g.rd_stop) && !(g.wr_stop))
+    in
     let runner () =
       let rec go orphans =
-        clean tags error conn orphans;
+        clean g orphans;
         let () =
-          Miou.Mutex.protect lock @@ fun () ->
-          if Queue.is_empty tasks && not (is_shutdown conn) then
-            Miou.Condition.wait cond lock
+          Miou.Mutex.protect g.lock @@ fun () ->
+          if Queue.is_empty g.tasks && not (is_shutdown g.conn) then
+            Miou.Condition.wait g.cond g.lock
         in
-        let seq = Queue.to_seq tasks in
+        let seq = Queue.to_seq g.tasks in
         let lst = List.of_seq seq in
-        Queue.clear tasks;
+        Queue.clear g.tasks;
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
-        if not (is_shutdown conn) then go orphans
+        if not (is_shutdown g.conn) then go orphans
         else begin
           Log.debug (fun m -> m ~tags "Connection closed");
-          let _ = Miou.Computation.try_cancel u_rd (Miou.Cancelled, empty_bt) in
-          let _ = Miou.Computation.try_cancel u_wr (Miou.Cancelled, empty_bt) in
-          ()
+          let _ =
+            Miou.Computation.try_cancel g.rd_resolver (Miou.Cancelled, empty_bt)
+          in
+          let _ =
+            Miou.Computation.try_cancel g.wr_resolver (Miou.Cancelled, empty_bt)
+          in
+          (* If one of the half-close steps did not happen on its own ([rd_stop]
+             or [wr_stop] still false), ask the [Flow] for a terminal shutdown.
+             On Linux a kernel-level shutdown turns any in-flight [read(2)]
+             readable via [POLLHUP] - the [Miou_unix] poller wakes the
+             reader task, [read] returns 0, and the reader unwinds normally
+             via [read_eof] + [`Close]. This is what breaks the deadlock
+             when a state-machine decides to close from outside the reader
+             task (e.g. [shutdown_reader] called from the H2 [Writer.flush]
+             callback, or from [report_exn]).
+
+             The [Flow] implementation may legitimately turn this into a
+             no-op (cf. [TCP_and_H1] for HTTP/1.1 server, where every
+             [shutdown_reader] path is reached from inside the reader task
+             itself, so the deadlock does not occur, and where closing the
+             fd here would race the writer task that has been queued via
+             [wakeup_writer] but not yet drained, truncating the response
+             and producing EBADF on the next [shutdown `write]). *)
+          if (not !(g.rd_stop)) || not !(g.wr_stop) then
+            shutdown flow `read_write
         end
       in
       let orphans = Miou.orphans () in
-      let finally () = terminate tags error conn orphans in
+      let finally () = drain orphans in
       Fun.protect ~finally @@ fun () -> go orphans
     in
     let upgrade () =
-      let rd = Miou.Computation.await u_rd in
-      let wr = Miou.Computation.await u_wr in
+      let rd = Miou.Computation.await g.rd_resolver in
+      let wr = Miou.Computation.await g.wr_resolver in
       match (rd, wr, upgrade) with
       | Error _, _, _ | _, Error _, _ -> ()
       | _, _, None ->
@@ -304,60 +383,21 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
       | Ok (), Ok (), Some fn ->
           let fn () =
             fn flow;
-            (* TODO(upgrade)
-               - multi-shutdown issue?
-               - Runtime.is_closed not true after shutdown `read and `write
-                 use is_shutdown instead *)
-            (* need to shutdown flow here *)
             Log.debug (fun m ->
                 m ~tags "Upgrade handler finished, shutdown the underlying flow");
-            s_rd := true;
             shutdown flow `read;
-            s_wr := true;
             shutdown flow `write;
-            (* assert (Runtime.is_closed conn); *)
-            assert (is_shutdown conn);
-            (* notify runner so it can stop waiting *)
-            Miou.Condition.signal cond
+            g.rd_stop := true;
+            g.wr_stop := true;
+            assert (is_shutdown g.conn);
+            Miou.Condition.signal g.cond
           in
-          Queue.push fn tasks
+          Queue.push fn g.tasks
     in
-    let rd =
-      let stop = s_rd and upgrade = u_rd in
-      reader
-        {
-          tags
-        ; conn
-        ; flow
-        ; tasks
-        ; buffer
-        ; read_buf
-        ; write_buf
-        ; stop
-        ; upgrade
-        ; lock
-        ; cond
-        }
-    in
-    let wr =
-      let stop = s_wr and upgrade = u_wr in
-      writer
-        {
-          tags
-        ; conn
-        ; flow
-        ; tasks
-        ; buffer
-        ; read_buf
-        ; write_buf
-        ; stop
-        ; upgrade
-        ; lock
-        ; cond
-        }
-    in
-    Queue.push rd tasks;
-    Queue.push wr tasks;
-    Queue.push upgrade tasks;
+    let rd = reader (to_reader g) in
+    let wr = writer (to_writer g) in
+    Queue.push rd g.tasks;
+    Queue.push wr g.tasks;
+    Queue.push upgrade g.tasks;
     Miou.async runner
 end
