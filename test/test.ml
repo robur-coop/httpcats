@@ -126,7 +126,7 @@ let test00 =
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let finally () = Mirage_crypto_rng_miou_unix.kill rng in
   Fun.protect ~finally @@ fun () ->
-  let handler _ = function
+  let handler _ _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
         let open H1 in
@@ -175,7 +175,7 @@ let test01 =
   let g1 = Random.State.copy g0 in
   let max = 0x100000 in
   let chunk = 0x10 in
-  let handler _ = function
+  let handler _ _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
         Logs.debug (fun m -> m "Got a request");
@@ -273,7 +273,7 @@ let test02 =
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let finally () = Mirage_crypto_rng_miou_unix.kill rng in
   Fun.protect ~finally @@ fun () ->
-  let handler _ = function
+  let handler _ _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
         let open H1 in
@@ -330,7 +330,7 @@ let test03 =
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let finally () = Mirage_crypto_rng_miou_unix.kill rng in
   Fun.protect ~finally @@ fun () ->
-  let handler _ = function
+  let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
         let body = "Hello World!" in
@@ -412,7 +412,7 @@ let test04 =
   let g2 = Random.State.copy g0 in
   let max = 0x100000 in
   let chunk = 0x10 in
-  let handler _ = function
+  let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
         let headers =
@@ -506,7 +506,7 @@ let test05 =
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let finally () = Mirage_crypto_rng_miou_unix.kill rng in
   Fun.protect ~finally @@ fun () ->
-  let handler _ = function
+  let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
         let f ctx str = Digestif.SHA1.feed_string ctx str in
@@ -591,7 +591,7 @@ let test06 =
   let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
   let finally () = Mirage_crypto_rng_miou_unix.kill rng in
   Fun.protect ~finally @@ fun () ->
-  let handler _ = function
+  let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
         let body = "Hello World!" in

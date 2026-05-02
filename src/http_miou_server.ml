@@ -95,6 +95,7 @@ type response = Httpcats_core.Server.response = {
 
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
+type conn = [ `H1 of H1.Server_connection.t | `H2 of H2.Server_connection.t ]
 
 type listen =
   | Bind of Unix.sockaddr
@@ -170,12 +171,16 @@ let http_1_1_server_connection ~config ~user's_error_handler ?upgrade
     in
     user's_error_handler `V1 ?request err respond
   in
-  let request_handler reqd = user's_handler (`Tcp flow) (`V1 reqd) in
-  let conn =
-    H1.Server_connection.create ~config ~error_handler request_handler
+  let rec fn reqd =
+    user's_handler (`Tcp flow) (`H1 (Lazy.force conn)) (`V1 reqd)
+  and conn = lazy (H1.Server_connection.create ~config ~error_handler fn) in
+  let conn = Lazy.force conn in
+  let finally (conn, flow) =
+    Log.debug (fun m -> m "Shutdown the http/1.1 connection");
+    H1.Server_connection.shutdown conn;
+    try Miou_unix.close flow with _exn -> ()
   in
-  let finally flow = try Miou_unix.close flow with _exn -> () in
-  let res = Miou.Ownership.create ~finally flow in
+  let res = Miou.Ownership.create ~finally (conn, flow) in
   Miou.Ownership.own res;
   let tags =
     match Logs.Src.level src with
@@ -202,12 +207,16 @@ let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
     in
     user's_error_handler `V1 ?request err respond
   in
-  let request_handler reqd = user's_handler (`Tls flow) (`V1 reqd) in
-  let conn =
-    H1.Server_connection.create ~config ~error_handler request_handler
+  let rec fn reqd =
+    user's_handler (`Tls flow) (`H1 (Lazy.force conn)) (`V1 reqd)
+  and conn = lazy (H1.Server_connection.create ~config ~error_handler fn) in
+  let conn = Lazy.force conn in
+  let finally (conn, flow) =
+    Log.debug (fun m -> m "Shutdown the http/1.1 (secure) connection");
+    H1.Server_connection.shutdown conn;
+    try Tls_miou_unix.close flow with _exn -> ()
   in
-  let finally flow = try Tls_miou_unix.close flow with _exn -> () in
-  let res = Miou.Ownership.create ~finally flow in
+  let res = Miou.Ownership.create ~finally (conn, flow) in
   Miou.Ownership.own res;
   let tags =
     match Logs.Src.level src with
@@ -231,10 +240,10 @@ let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
     let respond hdrs = `V2 (respond hdrs) in
     user's_error_handler `V2 ?request err respond
   in
-  let request_handler reqd = user's_handler (`Tls flow) (`V2 reqd) in
-  let finally flow = try Tls_miou_unix.close flow with _exn -> () in
-  let res = Miou.Ownership.create ~finally flow in
-  Miou.Ownership.own res;
+  let rec fn reqd =
+    user's_handler (`Tls flow) (`H2 (Lazy.force conn)) (`V2 reqd)
+  and conn = lazy (H2.Server_connection.create ~config ~error_handler fn) in
+  let conn = Lazy.force conn in
   let tags =
     match Logs.Src.level src with
     | Some Logs.Debug ->
@@ -245,9 +254,13 @@ let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
         Logs.Tag.add peer str Logs.Tag.empty
     | _ -> Logs.Tag.empty
   in
-  let conn =
-    H2.Server_connection.create ~config ~error_handler request_handler
+  let finally (conn, flow) =
+    Log.debug (fun m -> m "Shutdown the h2 (secure) connection");
+    H2.Server_connection.shutdown conn;
+    try Tls_miou_unix.close flow with _exn -> ()
   in
+  let res = Miou.Ownership.create ~finally (conn, flow) in
+  Miou.Ownership.own res;
   Miou.await_exn (C.run conn ~tags ~read_buffer_size ?upgrade flow);
   Miou.Ownership.release res
 

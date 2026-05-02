@@ -51,6 +51,7 @@ type response = { status: Status.t; headers: Headers.t }
 (** A response, consisting of status and headers. *)
 
 type body = [ `V1 of H1.Body.Writer.t | `V2 of H2.Body.Writer.t ]
+type conn = [ `H1 of H1.Server_connection.t | `H2 of H2.Server_connection.t ]
 type reqd = [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]
 
 type listen =
@@ -66,7 +67,7 @@ type listen =
 type error_handler =
   [ `V1 | `V2 ] -> ?request:request -> error -> (Headers.t -> body) -> unit
 
-type handler = flow -> reqd -> unit
+type handler = flow -> conn -> reqd -> unit
 
 (** Initialising an HTTP server mainly requires specifying the request handler.
     [httpcats] offers other options, which are described below.
