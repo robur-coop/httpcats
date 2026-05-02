@@ -66,7 +66,7 @@ let _not_found reqd =
   let resp = Response.create ~headers `OK in
   Reqd.respond_with_string reqd resp moo
 
-let[@warning "-8"] handler _
+let[@warning "-8"] handler _ _
     (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
   let open H1 in
   let request = Reqd.request reqd in

@@ -50,7 +50,7 @@ let exists ~root path =
   let path = Fpath.to_string path in
   Sys.file_exists path && Sys.is_directory path = false
 
-let[@warning "-8"] handler ~root _
+let[@warning "-8"] handler ~root _ _
     (`V1 reqd : [ `V1 of H1.Reqd.t | `V2 of H2.Reqd.t ]) =
   let open H1 in
   let request = Reqd.request reqd in

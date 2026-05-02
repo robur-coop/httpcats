@@ -160,13 +160,19 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
       match Runtime.next_read_operation t.conn with
       | `Read ->
           let fn =
+            Log.debug (fun m -> m "+read reader");
             match recv t.flow t.tmp t.buffer with
-            | `Eof -> Runtime.read_eof t.conn
-            | `Ok _len -> Runtime.read t.conn
+            | `Eof ->
+                Log.debug (fun m -> m "the flow was closed by peer");
+                Runtime.read_eof t.conn
+            | `Ok len ->
+                Log.debug (fun m -> m "got %d byte(s) from the given flow" len);
+                Runtime.read t.conn
           in
           let _ = Buffer.get t.buffer ~fn in
           protected ()
       | `Yield ->
+          Log.debug (fun m -> m "+yield reader");
           let k () =
             Miou.Mutex.protect t.lock @@ fun () ->
             Queue.push go t.tasks;
@@ -174,6 +180,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           in
           Runtime.yield_reader t.conn k
       | `Close ->
+          Log.debug (fun m -> m "+close reader");
           shutdown t.flow `read;
           t.stop := true
       | `Upgrade -> ignore (Miou.Computation.try_return t.upgrade ())
@@ -186,9 +193,11 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     let rec protected () =
       match Runtime.next_write_operation t.conn with
       | `Write iovecs ->
+          Log.debug (fun m -> m "+write writer");
           writev t.flow t.tmp iovecs |> Runtime.report_write_result t.conn;
           protected ()
       | `Yield ->
+          Log.debug (fun m -> m "+yield writer");
           let k () =
             Miou.Mutex.protect t.lock @@ fun () ->
             Queue.push go t.tasks;
@@ -196,6 +205,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           in
           Runtime.yield_writer t.conn k
       | `Close _ ->
+          Log.debug (fun m -> m "+close writer");
           shutdown t.flow `write;
           t.stop := true
       | `Upgrade -> ignore (Miou.Computation.try_return t.upgrade ())
@@ -337,6 +347,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
         let seq = Queue.to_seq g.tasks in
         let lst = List.of_seq seq in
         Queue.clear g.tasks;
+        Log.debug (fun m -> m "+%d task(s)" (List.length lst));
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
         if not (is_shutdown g.conn) then go orphans
         else begin
@@ -370,7 +381,9 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
       in
       let orphans = Miou.orphans () in
       let finally () = drain orphans in
-      Fun.protect ~finally @@ fun () -> go orphans
+      Fun.protect ~finally @@ fun () ->
+      go orphans;
+      Log.debug (fun m -> m "Runtime terminated, drain tasks")
     in
     let upgrade () =
       let rd = Miou.Computation.await g.rd_resolver in
