@@ -251,7 +251,15 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     | Some (Some prm) ->
         begin match Miou.await prm with
         | Ok () -> clean g orphans
-        | Error exn -> report_exn g exn; clean g orphans
+        | Error exn ->
+            report_exn g exn;
+            (* If a reader/writer task aborts before setting its [stop] flag
+               (e.g. an unexpected exception inside the H1 state machine), the
+               runner would otherwise wait forever for that flag. Force both
+               stops so the runner unwinds and the connection is closed. *)
+            g.rd_stop := true;
+            g.wr_stop := true;
+            clean g orphans
         end
 
   (* NOTE(dinosaure): [Runtime] design is a "runner" process that is awaiting
@@ -267,11 +275,21 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
      of state (the addition of a new task or a change of state of [conn] after
      one of the tasks has finished).
 
-     We trust [Runtime.is_closed] to complete our process, but it seems that it
-     cannot be fully trusted. There are [s_rd] and [s_wr] which
+     OLD(dinosaure): We trust [Runtime.is_closed] to complete our process, but
+     it seems that it cannot be fully trusted. There are [s_rd] and [s_wr] which
      determine the status of the socket (whether it is closed for reading and/or
      writing). These are not currently used but may be complementary in
-     determining the shutdown of [runner]. *)
+     determining the shutdown of [runner].
+
+     NOTE(dinosaure): [Runtime.is_closed] does not mean that there are no more
+     tasks and that the connection can be "terminated" (via [Miou.await_exn] or
+     [Miou.cancel]); it merely indicates that our internal state is closed. The
+     only way to know whether we should indeed terminate the tasks is to trust
+     the [Runtime] state machine and expect that [`Close] is indeed issued by
+     the writer and the reader. It should be noted that an exception may be
+     thrown by the network layer, and this must be reported by the state machine
+     (via [report_exn]) to signal our main loop to stop everything (particularly
+     when a client connection is interrupted by a [^C]). *)
 
   let to_reader g =
     {
@@ -333,15 +351,13 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   let run conn ?(tags = Logs.Tag.empty) ?(read_buffer_size = _minor) ?upgrade
       flow =
     let g = global ~read_buffer_size ~tags conn flow in
-    let is_shutdown conn =
-      Runtime.is_closed conn || (!(g.rd_stop) && !(g.wr_stop))
-    in
+    let is_shutdown () = !(g.rd_stop) && !(g.wr_stop) in
     let runner () =
       let rec go orphans =
         clean g orphans;
         let () =
           Miou.Mutex.protect g.lock @@ fun () ->
-          if Queue.is_empty g.tasks && not (is_shutdown g.conn) then
+          if Queue.is_empty g.tasks && not (is_shutdown ()) then
             Miou.Condition.wait g.cond g.lock
         in
         let seq = Queue.to_seq g.tasks in
@@ -349,7 +365,7 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
         Queue.clear g.tasks;
         Log.debug (fun m -> m "+%d task(s)" (List.length lst));
         List.iter (fun fn -> ignore (Miou.async ~orphans fn)) lst;
-        if not (is_shutdown g.conn) then go orphans
+        if not (is_shutdown ()) then go orphans
         else begin
           Log.debug (fun m -> m ~tags "Connection closed");
           let _ =
@@ -402,7 +418,6 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
             shutdown flow `write;
             g.rd_stop := true;
             g.wr_stop := true;
-            assert (is_shutdown g.conn);
             Miou.Condition.signal g.cond
           in
           Queue.push fn g.tasks
