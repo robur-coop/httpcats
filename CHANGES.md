@@ -1,3 +1,23 @@
+# v0.3.0 (2026-05-06) Paris - France
+
+- Don't predate how we close underlying connection when we write something. It
+  avoid a "double-close" (@dinosaure, #49)
+- **breaking change** Be able to specify a UNIX domain socket for listening
+  (@theAlexes, #51)
+- Delete the `rresult` dependency on tests (@dinosaure, #54)
+- Close only when (`httpcats`) we create and bind a socket (and don't do that
+  when the user pass a socket for us) (@theAlexes, @dinosaure, #53, #57)
+- Clean and fix our runtime (@dinosaure, #59, #61)
+
+  Here we decided to trust the underlying state machine
+  `H{1,2}.{Server,Client}_connection.t` to properly close a connection. When we
+  close it, we `Miou.cancel` tasks (instead of `Miou.await` them). `httpcats`
+  requires `miou.0.6.0` (which provides `Miou.take`). When the `Flow` raises
+  an exception, we report this exception to the state machine & it should stop
+  everything.
+
+- **breaking change** Pass the `conn` value to the handler (@dinosaure, #60)
+
 # v0.2.1 (2026-03-25) Paris - France
 
 - Use `Miou.Ownership` to release correctly our resource in any cases (including
