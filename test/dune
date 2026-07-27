@@ -7,7 +7,7 @@
  (name test)
  (modules test)
  (libraries
-  mirage-crypto-rng-miou-unix
+  mirage-crypto-rng.unix
   logs.fmt
   fmt.tty
   logs.threaded
