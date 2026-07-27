@@ -123,9 +123,6 @@ let secure_server ~seed ?(port = 8080) handler =
 let test00 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-  Fun.protect ~finally @@ fun () ->
   let handler _ _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
@@ -270,9 +267,6 @@ let fold_h2 ~finally ~f acc body =
 let test02 =
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-  Fun.protect ~finally @@ fun () ->
   let handler _ _ = function
     | `V2 _ -> assert false
     | `V1 reqd ->
@@ -327,9 +321,6 @@ let test03 =
   Alcotest.test_case "simple" `Quick @@ fun () ->
   let ( let* ) = Result.bind in
   Miou_unix.run ~domains @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-  Fun.protect ~finally @@ fun () ->
   let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
@@ -404,9 +395,6 @@ let test03 =
 let test04 =
   Alcotest.test_case "stream" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-  Fun.protect ~finally @@ fun () ->
   let g0 = Random.State.make_self_init () in
   let g1 = Random.State.copy g0 in
   let g2 = Random.State.copy g0 in
@@ -503,9 +491,6 @@ let test04 =
 let test05 =
   Alcotest.test_case "post" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-  Fun.protect ~finally @@ fun () ->
   let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
@@ -588,9 +573,6 @@ let test05 =
 let test06 =
   Alcotest.test_case "error with h2" `Quick @@ fun () ->
   Miou_unix.run ~domains @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-  let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-  Fun.protect ~finally @@ fun () ->
   let handler _ _ = function
     | `V2 reqd ->
         let open H2 in
@@ -636,6 +618,7 @@ let () =
   let stdout = Alcotest_engine.Formatters.make_stdout () in
   let stderr = Alcotest_engine.Formatters.make_stderr () in
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
+  Mirage_crypto_rng_unix.use_default ();
   Alcotest.run ~stdout ~stderr "network"
     [
       ("clear", [ test00; test01; test02 ])
