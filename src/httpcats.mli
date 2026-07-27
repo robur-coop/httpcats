@@ -279,7 +279,7 @@ type resolver =
     retransmit the content {b multiple times}. [htttpcats] therefore transforms
     all given streams into {i persistent} sequences using [Seq.memoize]. *)
 
-(** A body, consisting to a basic string or a stream ([string Seq.t]). *)
+(** A body, consisting of a basic string or a stream ([string Seq.t]). *)
 type body = String of string | Stream of string Seq.t
 
 val string : string -> body
