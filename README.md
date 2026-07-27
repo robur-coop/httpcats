@@ -42,9 +42,8 @@ let fn _meta _req _resp () = function
   | None -> ()
 
 let () = Miou_unix.run @@ fun () ->
-  let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+  Mirage_crypto_rng_unix.use_default ();
   ignore (Httpcats.request ~fn ~uri:"https://robur.coop/" ());
-  Mirage_crypto_rng_miou_unix.kill rng
 ```
 
 It's quite... simple. You can, of course, make `POST` requests, consume the

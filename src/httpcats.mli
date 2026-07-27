@@ -44,9 +44,7 @@ val pp_error : error Fmt.t
 
     {[
       let () = Miou_unix.run @@ fun () ->
-        let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-        let finally () = Mirage_crypto_rng_miou_unix.kill rng in
-        Fun.protect ~finally @@ fun () ->
+        Mirage_crypto_rng_unix.use_default ();
         Httpcats.request ...
     ]} *)
 
@@ -186,14 +184,14 @@ type socket =
           Ok (Ipaddr.V6.Set.fold fn set Ipaddr.Set.empty)
 
       let () = Miou_unix.run @@ fun () ->
-        let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+        Mirage_crypto_rng_unix.use_default ();
         let he = Happy_eyeballs_miou_unix.create () in
         let nameservers = [ uncensoreddns_org ] in
         let dns = Dns_client_miou_unix.create ~nameservers he in
         Happy_eyeballs_miou_unix.inject he (getaddrinfo dns);
         let finally () =
           Happy_eyeballs_miou_unix.kill he
-          Mirage_crypto_rng_miou_unix.kill rng in
+        in
         Fun.protect ~finally @@ fun () ->
         Httpcats.request ~resolver:(`Happy_eyeballs he) ...
     ]}
