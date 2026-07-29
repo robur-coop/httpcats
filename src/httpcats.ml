@@ -602,6 +602,8 @@ let meth_from_redirection meth (resp : response) =
 type filter =
   (string * string) list -> Cookie.cookie list -> (string * string) list
 
+let ca_certs = Miou.Lazy.from_fun Ca_certs.authenticator
+
 let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
     ?(headers = []) ?body ?(max_redirect = 5) ?(follow_redirect = true)
     ?(resolver = `System) ?cookies:(filter = accept_all_cookies) ~fn ~uri acc =
@@ -616,7 +618,7 @@ let request ?config:http_config ?tls_config ?authenticator ?(meth = `GET)
           | Some (`HTTP_1_1 _) -> [ "http/1.1" ]
         and authenticator =
           match authenticator with
-          | None -> Ca_certs.authenticator ()
+          | None -> Miou.Lazy.force ca_certs
           | Some authenticator -> Ok authenticator
         in
         Result.map
