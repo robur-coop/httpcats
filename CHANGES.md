@@ -1,3 +1,10 @@
+# v0.3.1 (2026-07-06) Melun - France
+
+- Use `mirage-crypto-rng.unix` instead of `mirage-crypto-rng-miou-unix`
+  (@hannesm, @dinosaure, #63)
+- Fix typo on documentation (@mneumann, #64)
+- Compute once the authenticator when it's needed (@dinosaure, #65)
+
 # v0.3.0 (2026-05-06) Paris - France
 
 - Don't predate how we close underlying connection when we write something. It
