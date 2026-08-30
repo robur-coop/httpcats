@@ -50,9 +50,13 @@ module H2_Server_connection = struct
          | `Upgrade ])
 end
 
-module A = Runtime.Make (Tls_miou_unix) (H1.Server_connection)
+module A = Runtime.Make (TLS) (H1.Server_connection)
 module B = Runtime.Make (TCP_and_H1) (H1.Server_connection)
 module C = Runtime.Make (TLS) (H2_Server_connection)
+
+(* NOTE(dinosaure): [?upgrade] is exposed to the user in terms of
+   [Tls_miou_unix.t], while the [Runtime] hands it our [TLS] wrapper. *)
+let tls_upgrade upgrade = Option.map (fun fn flow -> fn (TLS.prj flow)) upgrade
 
 type error = Httpcats_core.Server.error
 
@@ -228,7 +232,8 @@ let https_1_1_server_connection ~config ~user's_error_handler ?upgrade
         Logs.Tag.add peer str Logs.Tag.empty
     | _ -> Logs.Tag.empty
   in
-  Miou.await_exn (A.run conn ~tags ~read_buffer_size ?upgrade flow);
+  let upgrade = tls_upgrade upgrade in
+  Miou.await_exn (A.run conn ~tags ~read_buffer_size ?upgrade (TLS.make flow));
   Miou.Ownership.release res
 
 let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
@@ -261,7 +266,8 @@ let h2s_server_connection ~config ~user's_error_handler ?upgrade ~user's_handler
   in
   let res = Miou.Ownership.create ~finally (conn, flow) in
   Miou.Ownership.own res;
-  Miou.await_exn (C.run conn ~tags ~read_buffer_size ?upgrade flow);
+  let upgrade = tls_upgrade upgrade in
+  Miou.await_exn (C.run conn ~tags ~read_buffer_size ?upgrade (TLS.make flow));
   Miou.Ownership.release res
 
 let rec clean_up orphans =
@@ -470,7 +476,7 @@ module Websocket_connection = struct
 end
 
 module D = Runtime.Make (TCP_and_H1) (Websocket_connection)
-module E = Runtime.Make (Tls_miou_unix) (Websocket_connection)
+module E = Runtime.Make (TLS) (Websocket_connection)
 module Bstream = Bstream
 open H1
 open H1.Websocket
@@ -603,7 +609,7 @@ module Websocket = struct
     let runtime's_prm =
       match flow with
       | `Tcp flow -> D.run conn ~tags flow
-      | `Tls flow -> E.run conn ~tags flow
+      | `Tls flow -> E.run conn ~tags (TLS.make flow)
     in
     let wsd = Miou.Computation.await_exn ivar in
     let writer = Miou.async (write_websocket oc stop wsd) in
