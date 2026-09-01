@@ -161,6 +161,13 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
     ; cond: Miou.Condition.t
   }
 
+  let yield ~name:_ t register =
+    let waker = Miou.Computation.create () in
+    register t.conn (fun () -> ignore (Miou.Computation.try_return waker ()));
+    match Miou.Computation.await waker with
+    | Ok () -> `Continue
+    | Error (exn, bt) -> Printexc.raise_with_backtrace exn bt
+
   let reader t =
     let rec protected () =
       match Runtime.next_read_operation t.conn with
@@ -178,13 +185,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           let _ = Buffer.get t.buffer ~fn in
           protected ()
       | `Yield ->
-          Log.debug (fun m -> m "+yield reader");
-          let k () =
-            Miou.Mutex.protect t.lock @@ fun () ->
-            Queue.push go t.tasks;
-            Miou.Condition.signal t.cond
-          in
-          Runtime.yield_reader t.conn k
+          let `Continue = yield ~name:"reader" t Runtime.yield_reader in
+          protected ()
       | `Close ->
           Log.debug (fun m -> m "+close reader");
           shutdown t.flow `read;
@@ -203,13 +205,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
           writev t.flow iovecs |> Runtime.report_write_result t.conn;
           protected ()
       | `Yield ->
-          Log.debug (fun m -> m "+yield writer");
-          let k () =
-            Miou.Mutex.protect t.lock @@ fun () ->
-            Queue.push go t.tasks;
-            Miou.Condition.signal t.cond
-          in
-          Runtime.yield_writer t.conn k
+          let `Continue = yield ~name:"writer" t Runtime.yield_writer in
+          protected ()
       | `Close _ ->
           Log.debug (fun m -> m "+close writer");
           shutdown t.flow `write;
