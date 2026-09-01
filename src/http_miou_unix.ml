@@ -18,33 +18,18 @@ external reraise : exn -> 'a = "%reraise"
 module TCP = struct
   type t = Miou_unix.file_descr
 
-  let rec unsafe_read fd bstr off len =
-    match Unix.read_bigarray fd bstr off len with
-    | exception Unix.(Unix_error (EINTR, _, _)) -> unsafe_read fd bstr off len
-    | exception Unix.(Unix_error ((EAGAIN | EWOULDBLOCK), _, _)) ->
-        Miou_unix.blocking_read fd;
-        unsafe_read fd bstr off len
+  let read fd bstr ~off ~len =
+    match Miou_unix.read_bigstring fd ~off ~len bstr with
     | exception Unix.(Unix_error (ECONNRESET, _, _)) -> 0
-    | len' -> len'
+    | len -> len
 
-  let read flow bstr ~off ~len =
-    unsafe_read (Miou_unix.to_file_descr flow) bstr off len
-
-  let rec unsafe_write fd bstr off len =
-    if len > 0 then
-      match Unix.single_write_bigarray fd bstr off len with
-      | exception Unix.(Unix_error (EINTR, _, _)) ->
-          unsafe_write fd bstr off len
-      | exception Unix.(Unix_error ((EAGAIN | EWOULDBLOCK), _, _)) ->
-          Miou_unix.blocking_write fd;
-          unsafe_write fd bstr off len
+  let writev fd bstrs =
+    let fn { Faraday.buffer; off; len } =
+      match Miou_unix.write_bigstring fd buffer ~off ~len with
       | exception Unix.(Unix_error (EPIPE, _, _)) ->
           reraise Runtime.Flow.Closed_by_peer
-      | len' -> unsafe_write fd bstr (off + len') (len - len')
-
-  let writev flow bstrs =
-    let fd = Miou_unix.to_file_descr flow in
-    let fn { Faraday.buffer; off; len } = unsafe_write fd buffer off len in
+      | () -> ()
+    in
     List.iter fn bstrs
 
   let close = Miou_unix.close
