@@ -33,7 +33,28 @@ module H2_Client_connection = struct
          | `Upgrade ])
 end
 
-module A = Runtime.Make (TLS) (H1_Client_connection)
+module TLS_and_H1 = struct
+  include TLS
+
+  (* NOTE(dinosaure): [H1.Client_connection] handles a single request per
+     connection: as soon as the request has been fully written, the writer
+     gets a [`Close] and the runtime half-closes the write side.
+
+     Over TCP this is a plain SHUT_WR (a FIN) and servers cope with it, but
+     over TLS the very same [shutdown `write] emits a [close_notify] alert.
+     TLS 1.3 (RFC 8446, 6.1) allows a half-closed session, however a lot of
+     peers still implement the pre-1.3 behaviour and answer a [close_notify]
+     with their own [close_notify], discarding the response they were about
+     to write.
+
+     Since we have nothing left to send anyway, we simply do not signal the
+     end of our write side here. The [close_notify] is still sent (together
+     with the actual [Unix.close]) by [httpcats] once the response has been
+     consumed and the flow is closed. *)
+  let shutdown flow = function `write -> () | cmd -> shutdown flow cmd
+end
+
+module A = Runtime.Make (TLS_and_H1) (H1_Client_connection)
 module B = Runtime.Make (TCP) (H1_Client_connection)
 module C = Runtime.Make (TLS) (H2_Client_connection)
 module D = Runtime.Make (TCP) (H2_Client_connection)
@@ -143,7 +164,7 @@ let run ~f acc config flow request =
         H1.Client_connection.request ~config request ~error_handler
           ~response_handler
       in
-      let prm = A.run conn ~read_buffer_size flow in
+      let prm = A.run conn ~read_buffer_size (TLS_and_H1.make flow) in
       Process { version= V1; acc; response; body; conn; process= prm }
   | `Tcp flow, `V1 config, `V1 request ->
       let read_buffer_size = config.H1.Config.read_buffer_size in
@@ -174,7 +195,7 @@ let run ~f acc config flow request =
         H2.Client_connection.request conn ~error_handler ~response_handler
           request
       in
-      let prm = C.run conn ~read_buffer_size flow in
+      let prm = C.run conn ~read_buffer_size (TLS.make flow) in
       Process { version= V2; acc; response; body; conn; process= prm }
   | `Tcp flow, `V2 config, `V2 request ->
       let read_buffer_size = config.H2.Config.read_buffer_size in
