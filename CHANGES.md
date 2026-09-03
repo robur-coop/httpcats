@@ -1,3 +1,11 @@
+# v0.3.2 (2026-09-02) Paris - France
+
+- Be able to avoid a cost when we are able to pass to the underlying flow a
+  bigstring (@dinosaure, #67)
+- Simplify our runtime implementation and avoid task allocations when we yield
+  (@dinosaure, #67)
+- Fix a specific issue with HTTP/1.1 and TLS (@dinosaure, #67)
+
 # v0.3.1 (2026-07-06) Melun - France
 
 - Use `mirage-crypto-rng.unix` instead of `mirage-crypto-rng-miou-unix`
