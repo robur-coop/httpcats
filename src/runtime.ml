@@ -223,9 +223,9 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   }
 
   (* NOTE(dinosaure): report exception only once. *)
-  let report_exn g exn =
-    Log.err (fun m ->
-        m ~tags:g.tags "user's exception: %s" (Printexc.to_string exn));
+  let report_exn g exn backtrace =
+    Logs.err (fun m ->
+        m ~tags:g.tags "user's exception: %a" Fmt.exn_backtrace (exn, backtrace));
     if !(g.errored) = false then begin
       Runtime.report_exn g.conn exn;
       g.errored := true
@@ -234,7 +234,8 @@ module Make (Flow : Flow.S) (Runtime : S) = struct
   let guarded g fn () =
     try fn ()
     with exn ->
-      report_exn g exn;
+      let backtrace = Printexc.get_raw_backtrace () in
+      report_exn g exn backtrace;
       g.rd_stop := true;
       g.wr_stop := true;
       shutdown g.flow `read_write
