@@ -1,4 +1,4 @@
-let src = Logs.Src.create "runtime"
+let src = Logs.Src.create "httpcats.runtime"
 
 (* NOTE(dinosaure): the initial size of the bigstring into which we accumulate
    what the peer sends us (it grows on demand, see [Buffer.put]). Almost every
