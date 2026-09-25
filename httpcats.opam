@@ -16,6 +16,7 @@ depends: [
   "h1" {>= "1.1.0"}
   "ca-certs"
   "bstr"
+  "x509" {>= "1.2.0"}
   "tls-miou-unix" {>= "1.0.1"}
   "dns-client-miou-unix" {>= "9.0.0"}
   "happy-eyeballs-miou-unix"

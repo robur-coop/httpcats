@@ -41,13 +41,14 @@ let server ?(port = 9451) handler =
 module Ca = struct
   let prefix =
     X509.Distinguished_name.
-      [ Relative_distinguished_name.singleton (CN "HTTPcats") ]
+      [ Relative_distinguished_name.singleton (CN (Common_name.v "HTTPcats")) ]
 
   let cacert_dn =
     X509.Distinguished_name.(
       prefix
       @ [
-          Relative_distinguished_name.singleton (CN "Ephemeral CA for httpcats")
+          Relative_distinguished_name.singleton
+            (CN (Common_name.v "Ephemeral CA for httpcats"))
         ])
 
   let cacert_lifetime = Ptime.Span.v (365, 0L)
