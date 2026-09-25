@@ -8,14 +8,17 @@ latency across several OCaml HTTP server stacks and nginx as a baseline.
 
 | Name | Stack | Runtime | Binary |
 |------|-------|---------|--------|
-| **httpcats** | [httpcats](https://github.com/robur-coop/httpcats) (h1/h2) | [miou](https://github.com/robur-coop/miou) | `smiou.exe` |
-| **vif** | [vif](https://github.com/robur-coop/vif) (built on httpcats) | miou | `svif.exe` |
-| **httpun+eio** | [httpun](https://github.com/anmonteiro/httpun) 0.2.0 | [eio](https://github.com/ocaml-multicore/eio) 1.3 | `seio.exe` |
-| **nginx** | nginx/1.28.2 | native | `nginx` |
+| **httpcats** | [httpcats](https://github.com/robur-coop/httpcats) 0.3.2 (h1/h2) | [miou](https://github.com/robur-coop/miou) 0.10.1 | `smiou.exe` |
+| **vif** | [vif](https://github.com/robur-coop/vif) 0.0.1~beta5 (built on httpcats 0.3.2) | miou 0.10.1 | `svif.exe` |
+| **httpun+eio** | [httpun](https://github.com/anmonteiro/httpun) 0.2.0 | [eio](https://github.com/ocaml-multicore/eio) 1.6 | `seio.exe` |
+| **nginx** | nginx/1.30.5 | native | `nginx` |
 
 All OCaml servers respond to `GET /plaintext` with `Hello, World!`
 (`text/plain`) and `GET /json` with `{"message":"Hello, World!"}`
 (`application/json`). nginx only serves `/plaintext`.
+
+All OCaml packages come from opam releases (no pins, no patched versions),
+compiled with OCaml 5.5.0.
 
 All servers set `TCP_NODELAY` on accepted connections.
 
@@ -27,8 +30,8 @@ All servers set `TCP_NODELAY` on accepted connections.
     (2 × 32 MiB CCDs)
   - Single NUMA node (all 32 logical CPUs on node 0)
 - **RAM**: 64 GB DDR5
-- **OS**: Arch Linux, kernel `6.18.13-zen1-1-zen` (ZEN preemptive, SMP)
-- **Compiler**: GCC 15.2.1
+- **OS**: Arch Linux, kernel `7.2.6-zen2-1-zen` (ZEN preemptive, SMP)
+- **Compiler**: GCC 16.2.1, OCaml 5.5.0
 
 ### CPU topology note
 
@@ -85,7 +88,7 @@ without waiting for additional data to coalesce.
 
 ## Load generator
 
-- **wrk** version 4.2.0-3 (ArchLinux AUR package)
+- **wrk** commit `f8eb608` (epoll backend)
 - Each test runs for **120 seconds** (`-d120s`)
 - Each configuration is repeated **3 times** (3 attempts) to assess
   reproducibility
@@ -119,8 +122,8 @@ DOMAINS=<N-1> taskset -c 0-7 ./svif.exe
 # httpun+eio
 DOMAINS=<N-1> taskset -c 0-7 ./seio.exe
 
-# nginx
-sudo taskset -c 0-7 nginx -p . -c nginx.conf
+# nginx (runs unprivileged since it listens on port 8080)
+taskset -c 0-7 nginx -p . -c nginx.conf
 ```
 
 The `DOMAINS` environment variable controls the number of OCaml domains
@@ -129,8 +132,9 @@ means the server runs on N domains total (1 main domain + N-1 additional
 domains). For eio, the value is passed to `Eio.Net.run_server
 ~additional_domains`.
 
-For nginx, the number of worker processes is set in `nginx.conf`
-(`worker_processes 8`) with `worker_cpu_affinity auto`.
+For nginx, the number of worker processes plays the role of the number of
+domains: `run.sh` rewrites `worker_processes` in `nginx.conf` to `N` for each
+configuration, with `worker_cpu_affinity auto`.
 
 ## Test matrix
 
@@ -160,7 +164,7 @@ higher percentage indicates a more stable/predictable distribution.
 
 nginx is configured for maximum raw throughput with the following key settings
 (see `nginx.conf`):
-- `worker_processes 8` with `worker_cpu_affinity auto`
+- `worker_processes N` (8 by default) with `worker_cpu_affinity auto`
 - `worker_connections 32768`
 - `access_log off` and `server_tokens off`
 - `keepalive_requests 300000` (default is 100)
