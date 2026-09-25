@@ -19,12 +19,13 @@ difficult, you just have to choose your poison (OCaml or C?).
 **U**: However, there are other implementations of HTTP client & server in
 OCaml. Why implement it yet again?
 
-These implementations don't use [miou], however. What's more, since
-[http-lwt-client], we're opposed to the (ultimately complex) feature of being
-able to choose the TLS implementation (although we understand the constraints
-some users may have in wanting to use OpenSSL) and prefer to offer an HTTP
-client that uses strictly [ocaml-tls][ocaml-tls]. Finally, we also want to have
-control over domain resolution, rather than having to use the system's resolver.
+These implementations don't use [miou][miou], however. What's more, since
+[http-lwt-client][http-lwt-client], we're opposed to the (ultimately complex)
+feature of being able to choose the TLS implementation (although we understand
+the constraints some users may have in wanting to use OpenSSL) and prefer to
+offer an HTTP client that uses strictly [ocaml-tls][ocaml-tls]. Finally, we
+also want to have control over domain resolution, rather than having to use the
+system's resolver.
 
 <hr />
 
@@ -111,65 +112,10 @@ implementations in OCaml. You can find more details [here][discuss-benchmark].
 As for `httpcats`, a benchmark was developed and proposed
 [here][FrameworkBenchmarks].
 
-This benchmark tool has the advantage of being fairly reproducible. Here are
-the results between `httpun+eio` and `httpcats` (`h1+miou`) (on AMD Ryzen 9
-7950X 16-Core):
-
-### `httpcats` (or `h1` + `miou`)
-
-| clients | threads | latencyAvg | latencyMax | latencyStdev | totalRequests |
-|---------|---------|------------|------------|--------------|---------------|
-| 16      | 16      | 47.43us    | 2.27ms     | 38.48us      | 5303700       |
-| 32      | 32      | 71.73us    | 1.04ms     | 47.58us      | 7016729       |
-| 64      | 32      | 140.29us   | 5.72ms     | 121.50us     | 7658146       |
-| 128     | 32      | 279.73us   | 11.35ms    | 287.92us     | 7977306       |
-| 256     | 32      | 519.02us   | 16.89ms    | 330.20us     | 7816435       |
-| 512     | 32      | 1.06ms     | 37.42ms    | 534.14us     | 7409781       |
-
-### `httpun` & `eio`
-
-| clients | threads | latencyAvg | latencyMax | latencyStdev | totalRequests |
-|---------|---------|------------|------------|--------------|---------------|
-| 16      | 16      | 1.19ms     | 17.12ms    | 2.09ms       | 2966727       |
-| 32      | 32      | 0.91ms     | 17.49ms    | 1.65ms       | 5366296       |
-| 64      | 32      | 1.08ms     | 17.30ms    | 1.82ms       | 5919733       |
-| 128     | 32      | 1.16ms     | 18.62ms    | 1.76ms       | 6187300       |
-| 256     | 32      | 1.41ms     | 26.61ms    | 1.96ms       | 6604454       |
-| 512     | 32      | 1.84ms     | 32.37ms    | 2.23ms       | 6798222       |
-
-### Interpretations
-
-As we can see, `httpcats` performs **better** than `eio` (with `httpun`) in
-terms of latency and the number of requests it can handle per second.
-
-To be precise, `h1` and `httpun` are both forks of `httpaf` and the code is
-very similar. If we had to explain a difference between these two benchmarks,
-it would **not** be due to `h1` or `httpun`.
-
-CoHTTP is not included in this benchmark because it is more a comparison
-between schedulers than implementations of the HTTP/1.1 protocol. In this case,
-`h1` and `httpun`, due to their similarities with `httpaf`, normally perform
-better than CoHTTP — you can see [the conference][httpaf-conf] about `httpaf`
-or the official [repository][httpaf]. These implementations also allow for
-support of the [`h2`][h2] protocol (which is not currently possible with
-CoHTTP).
-
-The real difference lies between `miou` and `eio` and their task management
-policies. For more details, please refer to [the Miou documentation][miou-doc]:
-overall, Miou offers more _poll points_ than Eio, which provides more
-opportunities to manage more clients. This is one of Miou's stated objectives:
-to be a scheduler designed for this type of service.
-
-<hr />
-
-<tag id="fn2">**2**</tag>: In the discussion thread presented above, there is
-also mention of `httpaf+lwt`, which performs even better than `httpcats`. It is
-specified that the use of domains in this benchmark is **not** safe.
-
-<tag id="fn3">**3**</tag>: It should be noted that `eio` uses
-[`io_uring`][io_uring] while Miou uses `select(3P)`. It is possible to improve
-Miou to use `epoll(7)` or `io_uring` (and make sure that `httpcats` uses this
-implementation) but, as it stands, `select()` is sufficient.
+We decided to propose a _protocol_ which describe how we benchmark OCaml HTTP
+implementations. Everything is described here: [PROTOCOL.md][protocol]. Results
+are also available here: [BENCH.md][bench] and a view of these results are
+available here: [Benchmarks][bench-index].
 
 [miou]: https://github.com/robur-coop/miou
 [ocaml-dns]: https://github.com/mirage/ocaml-dns
@@ -192,3 +138,6 @@ implementation) but, as it stands, `select()` is sufficient.
 [FrameWorkBenchmarks]: https://github.com/TechEmpower/FrameworkBenchmarks/pull/10009
 [conduit]: https://github.com/mirage/ocaml-conduit
 [gluten]: https://github.com/anmonteiro/gluten
+[protocol]: ./bench/PROTOCOL.md
+[bench]: ./bench/BENCH.md
+[bench-index]: https://robur-coop.github.io/httpcats/index.html
