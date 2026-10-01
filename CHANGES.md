@@ -1,3 +1,10 @@
+# v0.3.3 (2026-09-30) Paris - France
+
+- Upgrade to `x509.1.2.0` (@dinosaure, #70)
+- Change runtime log source of our httpcats's runtime (@reynir, #69)
+- Report backtrace when we catch an exception (@reynir, #72)
+- Upgrade benchmarks (@dinosaure, #73)
+
 # v0.3.2 (2026-09-02) Paris - France
 
 - Be able to avoid a cost when we are able to pass to the underlying flow a
