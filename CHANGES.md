@@ -1,3 +1,8 @@
+# v0.3.4 (2026-11-09) Paris - France
+
+- Fix how we handle redirection and the Location field (@reynir, @dinosaure,
+  #75)
+
 # v0.3.3 (2026-09-30) Paris - France
 
 - Upgrade to `x509.1.2.0` (@dinosaure, #70)
