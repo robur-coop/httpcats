@@ -25,4 +25,18 @@ let test00 =
   let uri = (false, "", None, "", None, "/foo") in
   Alcotest.(check value) ":/foo" (Httpcats.decode_uri ":/foo") (Ok uri)
 
-let () = Alcotest.run "decode_uri" [ ("simple", [ test00 ]) ]
+let test01 =
+  Alcotest.test_case "location" `Quick @@ fun () ->
+  let uri = "https://user:pass@builds.robur.coop/old-path" in
+  let location = "//builds.osau.re/new-path" in
+  Alcotest.(check (result string reject))
+    "schema relative resolve_location" (Ok "https://builds.osau.re/new-path")
+    (Httpcats.resolve_location ~uri ~location);
+  let uri = "https://user:pass@builds.robur.coop/job/mollymawk/build/latest"
+  and location = "/job/mollymawk/build/7aba1606-06e6-4e66-9d3b-8410f0183a49" in
+  Alcotest.(check (result string reject))
+    "relative resolve_location"
+    (Ok ("https://user:pass@builds.robur.coop" ^ location))
+    (Httpcats.resolve_location ~uri ~location)
+
+let () = Alcotest.run "decode_uri" [ ("simple", [ test00; test01 ]) ]
